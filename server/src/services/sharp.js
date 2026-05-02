@@ -81,7 +81,7 @@ module.exports = ({ strapi }) => {
 
         const col = fpx <= 0.33 ? 'left' : fpx >= 0.67 ? 'right' : '';
         const row = fpy <= 0.33 ? 'top' : fpy >= 0.67 ? 'bottom' : '';
-        const position = col || row ? [row, col].filter(Boolean).join(' ') : 'centre';
+        const position = col || row ? [col, row].filter(Boolean).join(' ') : 'centre';
 
         pipeline = pipeline.resize(w, h, {
           fit,

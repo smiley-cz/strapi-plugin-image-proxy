@@ -226,8 +226,10 @@ export function imageUrl(image, { w, h, format, q, fit } = {}) {
   if (fit) params.set('fit', fit);
 
   if (image.focalPoint) {
-    params.set('fpx', String(image.focalPoint.x));
-    params.set('fpy', String(image.focalPoint.y));
+    const fpx = image.focalPoint.x > 1 ? image.focalPoint.x / 100 : image.focalPoint.x;
+    const fpy = image.focalPoint.y > 1 ? image.focalPoint.y / 100 : image.focalPoint.y;
+    params.set('fpx', String(fpx));
+    params.set('fpy', String(fpy));
   }
 
   if (image.updatedAt) {
