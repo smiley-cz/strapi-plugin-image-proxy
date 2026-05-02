@@ -188,10 +188,18 @@ Utilities for building proxied image URLs from Strapi image objects. Place in yo
 import { strapiMedia } from '$lib/api/strapi';
 
 /**
+ * @typedef {Object} StrapiImage
+ * @property {string}  url
+ * @property {string}  [alternativeText]
+ * @property {string}  [updatedAt]
+ * @property {{ x: number, y: number }} [focalPoint]
+ */
+
+/**
  * @typedef {Object} ImageTransformOptions
  * @property {number}  [w]      - Output width in pixels
  * @property {number}  [h]      - Output height in pixels
- * @property {string}  [format] - Output format (webp, avif, jpg, png, gif). Also accepts `f` as shorthand in URLs
+ * @property {string}  [format] - Output format (webp, avif, jpg, png, gif)
  * @property {number}  [q]      - Quality 1–100
  * @property {string}  [fit]    - Fit mode: cover, contain, fill, inside, outside
  */
@@ -201,7 +209,7 @@ import { strapiMedia } from '$lib/api/strapi';
  * Automatically includes focal point when set in the media library.
  * Appends `v` param from `updatedAt` for cache busting across all layers.
  *
- * @param {Object} image                  - Strapi image object (must include `updatedAt` field)
+ * @param {StrapiImage | null | undefined} image - Strapi image object
  * @param {ImageTransformOptions} [opts]  - Transform options
  * @returns {string}
  */
@@ -213,9 +221,9 @@ export function imageUrl(image, { w, h, format, q, fit } = {}) {
 
   if (w != null) params.set('w', String(w));
   if (h != null) params.set('h', String(h));
-  if (format)    params.set('format', format);
+  if (format) params.set('f', format);
   if (q != null) params.set('q', String(q));
-  if (fit)       params.set('fit', fit);
+  if (fit) params.set('fit', fit);
 
   if (image.focalPoint) {
     params.set('fpx', String(image.focalPoint.x));
@@ -233,7 +241,7 @@ export function imageUrl(image, { w, h, format, q, fit } = {}) {
 /**
  * Build a `srcset` string for responsive images.
  *
- * @param {Object}   image    - Strapi image object
+ * @param {StrapiImage | null | undefined} image - Strapi image object
  * @param {number[]} widths   - Array of widths, e.g. [400, 800, 1200]
  * @param {Omit<ImageTransformOptions, 'w'>} [opts] - Shared options (format, q, fit)
  * @returns {string}
@@ -248,9 +256,9 @@ export function imageSrcset(image, widths, opts = {}) {
 
 > **Note:** `strapiMedia()` resolves relative `/uploads/...` paths to full URLs using your `PUBLIC_STRAPI_URL` env variable. If you don't have this helper, replace `strapiMedia(image.url)` with `image.url` for same-origin setups.
 
-> **Important:** Include `updatedAt` in your Strapi image field selections so that `v` cache busting works:
+> **Important:** Include `updatedAt` and `focalPoint` in your Strapi image field selections so that cache busting and focal-point cropping work. All fields except `url` are optional — the helper gracefully skips any that are missing:
 > ```js
-> image: { fields: ['url', 'alternativeText', 'updatedAt'] }
+> image: { fields: ['url', 'alternativeText', 'updatedAt', 'focalPoint'] }
 > ```
 
 ### Usage: basic `<img>`
