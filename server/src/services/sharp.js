@@ -1,5 +1,6 @@
 'use strict';
 
+const path = require('path');
 const sharp = require('sharp');
 
 const VALID_FITS = new Set(['cover', 'contain', 'fill', 'inside', 'outside']);
@@ -124,8 +125,9 @@ module.exports = ({ strapi }) => {
       //+ Strip all metadata (EXIF, GPS, ICC, XMP) from processed output
       pipeline = pipeline.withMetadata(false);
 
-      //+ Format (always last)
-      const format = params.format || params.f || config.defaultFormat;
+      //+ Format (always last) — preserve source format unless explicitly overridden
+      const sourceExt = path.extname(sourcePath).slice(1).toLowerCase();
+      const format = params.format || params.f || sourceExt || config.defaultFormat;
       const quality = int(params.q, 1, 100) ?? config.defaultQuality;
       const formatOptions = { quality };
 

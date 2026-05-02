@@ -73,7 +73,7 @@ module.exports = ({ strapi }) => ({
     const cacheService = strapi.plugin('image-proxy').service('cache');
     const sharpService = strapi.plugin('image-proxy').service('sharp');
 
-    const outputFormat = requestedFormat || config.defaultFormat;
+    const outputFormat = requestedFormat || ext;
     const hash = sanitize(filename.replace(`.${ext}`, ''));
     const cacheKey = cacheService.buildKey(hash, query);
 
