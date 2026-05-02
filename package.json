@@ -8,6 +8,13 @@
     "displayName": "Image Proxy",
     "description": "On-demand image processing with Sharp, disk caching, and TTL support"
   },
+  "exports": {
+    "./strapi-server": {
+      "source": "./server/src/index.js",
+      "require": "./server/src/index.js",
+      "default": "./server/src/index.js"
+    }
+  },
   "engines": {
     "node": ">=18.17.0"
   },

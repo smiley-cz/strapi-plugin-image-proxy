@@ -61,8 +61,6 @@ module.exports = ({ strapi }) => {
       const w = int(params.w, 1, config.maxOutputWidth);
       const h = int(params.h, 1, config.maxOutputHeight);
 
-      this.validateDimensions(w, h);
-
       /*
        * Single Sharp instance: limitInputPixels rejects oversized images,
        * failOn 'error' tolerates slightly corrupt uploads (phone cameras etc.),
@@ -80,10 +78,15 @@ module.exports = ({ strapi }) => {
         const fit = VALID_FITS.has(params.fit) ? params.fit : 'cover';
         const fpx = float(params.fpx, 0, 1) ?? 0.5;
         const fpy = float(params.fpy, 0, 1) ?? 0.5;
+
+        const col = fpx <= 0.33 ? 'left' : fpx >= 0.67 ? 'right' : '';
+        const row = fpy <= 0.33 ? 'top' : fpy >= 0.67 ? 'bottom' : '';
+        const position = col || row ? [row, col].filter(Boolean).join(' ') : 'centre';
+
         pipeline = pipeline.resize(w, h, {
           fit,
-          position: `${fpx * 100}% ${fpy * 100}%`,
-          withoutEnlargement: params.withoutEnlargement === 'true',
+          position,
+          withoutEnlargement: params.withoutEnlargement !== 'false',
         });
       }
 
@@ -122,7 +125,7 @@ module.exports = ({ strapi }) => {
       pipeline = pipeline.withMetadata(false);
 
       //+ Format (always last)
-      const format = params.format || config.defaultFormat;
+      const format = params.format || params.f || config.defaultFormat;
       const quality = int(params.q, 1, 100) ?? config.defaultQuality;
       const formatOptions = { quality };
 

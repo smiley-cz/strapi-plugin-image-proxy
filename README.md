@@ -15,6 +15,8 @@ Intercepts requests to `/uploads/` URLs that contain valid transformation parame
 - Automatically uses Strapi-generated thumbnail formats as source where possible (avoids processing large originals at request time)
 - Path-based Sharp input with `sequentialRead` — memory-efficient, handles large files safely
 - Safety limits: max input megapixels, max output dimensions, Sharp concurrency cap
+- Dimension validation: requests with `w` or `h` outside the allowed range are rejected with a `400` response before any processing
+- `withoutEnlargement` is `true` by default — images are never upscaled beyond their original dimensions unless explicitly opted out
 - All query parameters are validated and clamped to safe ranges
 - Atomic cache writes — no partial files on crash
 - Auto-invalidates cache when files are deleted or replaced in Strapi
@@ -91,8 +93,8 @@ module.exports = {
 | `defaultFormat` | string | `webp` | Output format when none specified in request. One of: `jpg`, `jpeg`, `png`, `webp`, `avif`, `tiff`, `gif` |
 | `defaultQuality` | number | `85` (1–100) | Output quality when none specified in request |
 | `maxInputPixels` | integer | `100000000` (100 megapixels) | Max source image size (width × height). Images exceeding this are served unprocessed |
-| `maxOutputWidth` | integer | `4000` (4000 px) | Max allowed output width. Requests above this are clamped |
-| `maxOutputHeight` | integer | `4000` (4000 px) | Max allowed output height. Requests above this are clamped |
+| `maxOutputWidth` | integer | `4000` (4000 px) | Max allowed output width. Requests outside `1–maxOutputWidth` are rejected with `400` |
+| `maxOutputHeight` | integer | `4000` (4000 px) | Max allowed output height. Requests outside `1–maxOutputHeight` are rejected with `400` |
 | `sharpConcurrency` | integer | `2` (2 threads/image) | Threads per image. Keep low on shared VPS, increase on dedicated machines |
 
 ---
@@ -116,6 +118,12 @@ https://yourdomain.cz/uploads/my-image_abc123.jpg?w=400&grayscale=true&blur=2
 
 # Force avif output at custom quality
 https://yourdomain.cz/uploads/my-image_abc123.jpg?w=1200&format=avif&q=70
+
+# Same as above using the `f` shorthand
+https://yourdomain.cz/uploads/my-image_abc123.jpg?w=1200&f=avif&q=70
+
+# Explicitly allow upscaling beyond original dimensions
+https://yourdomain.cz/uploads/my-image_abc123.jpg?w=3000&withoutEnlargement=false
 ```
 
 ---
@@ -127,17 +135,18 @@ All numeric parameters are validated and clamped to their allowed range. Invalid
 ### Resize
 | Param | Type | Range | Description |
 |---|---|---|---|
-| `w` | number | 1–`maxOutputWidth` | Output width in pixels |
-| `h` | number | 1–`maxOutputHeight` | Output height in pixels |
+| `w` | number | 1–`maxOutputWidth` | Output width in pixels. Values outside this range return `400` |
+| `h` | number | 1–`maxOutputHeight` | Output height in pixels. Values outside this range return `400` |
 | `fit` | string | `cover`, `contain`, `fill`, `inside`, `outside` | Sharp fit mode (default: `cover`) |
 | `fpx` | number | 0–1 | Focal point X (default: `0.5`) |
 | `fpy` | number | 0–1 | Focal point Y (default: `0.5`) |
-| `withoutEnlargement` | boolean | | Never upscale beyond original dimensions |
+| `withoutEnlargement` | boolean | | Never upscale beyond original dimensions (default: `true`). Set `withoutEnlargement=false` to allow upscaling |
 
 ### Format
 | Param | Type | Range | Description |
 |---|---|---|---|
 | `format` | string | `webp`, `avif`, `jpg`, `png`, `tiff`, `gif` | Output format |
+| `f` | string | (same as `format`) | Shorthand alias for `format` |
 | `q` | number | 1–100 | Quality (default: `85`) |
 | `lossless` | boolean | | Lossless compression (webp only) |
 | `effort` | number | 0–6 | Compression effort (webp/avif) |
@@ -182,7 +191,7 @@ import { strapiMedia } from '$lib/api/strapi';
  * @typedef {Object} ImageTransformOptions
  * @property {number}  [w]      - Output width in pixels
  * @property {number}  [h]      - Output height in pixels
- * @property {string}  [format] - Output format (webp, avif, jpg, png, gif)
+ * @property {string}  [format] - Output format (webp, avif, jpg, png, gif). Also accepts `f` as shorthand in URLs
  * @property {number}  [q]      - Quality 1–100
  * @property {string}  [fit]    - Fit mode: cover, contain, fill, inside, outside
  */

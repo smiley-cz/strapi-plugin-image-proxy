@@ -5,7 +5,7 @@ const { access } = require('fs/promises');
 
 const VALID_PARAMS = new Set([
   'w', 'h', 'fit', 'fpx', 'fpy', 'withoutEnlargement',
-  'format', 'q', 'lossless', 'effort', 'compressionLevel',
+  'f', 'format', 'q', 'lossless', 'effort', 'compressionLevel',
   'grayscale', 'negate', 'normalize', 'tint', 'gamma',
   'blur', 'sharpen', 'median',
   'flip', 'flop', 'rotate',
@@ -46,13 +46,34 @@ module.exports = ({ strapi }) => ({
 
     if (!VALID_INPUT_FORMATS.has(ext)) return next();
     if (!hasValidParams(query)) return next();
-    if (query.format && !VALID_OUTPUT_FORMATS.has(query.format)) return next();
+
+    const requestedFormat = query.format || query.f;
+    if (requestedFormat && !VALID_OUTPUT_FORMATS.has(requestedFormat)) return next();
+
+    const config = strapi.config.get('plugin::image-proxy');
+
+    //+ Reject invalid or out-of-range dimensions early (before touching Sharp)
+    if (query.w != null) {
+      const w = Number(query.w);
+      if (!Number.isFinite(w) || w < 1 || w > config.maxOutputWidth) {
+        ctx.status = 400;
+        ctx.body = { error: `w must be between 1 and ${config.maxOutputWidth}` };
+        return;
+      }
+    }
+    if (query.h != null) {
+      const h = Number(query.h);
+      if (!Number.isFinite(h) || h < 1 || h > config.maxOutputHeight) {
+        ctx.status = 400;
+        ctx.body = { error: `h must be between 1 and ${config.maxOutputHeight}` };
+        return;
+      }
+    }
 
     const cacheService = strapi.plugin('image-proxy').service('cache');
     const sharpService = strapi.plugin('image-proxy').service('sharp');
-    const config = strapi.config.get('plugin::image-proxy');
 
-    const outputFormat = query.format || config.defaultFormat;
+    const outputFormat = requestedFormat || config.defaultFormat;
     const hash = sanitize(filename.replace(`.${ext}`, ''));
     const cacheKey = cacheService.buildKey(hash, query);
 
