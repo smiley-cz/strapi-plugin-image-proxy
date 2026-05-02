@@ -8,8 +8,11 @@
     "displayName": "Image Proxy",
     "description": "On-demand image processing with Sharp, disk caching, and TTL support"
   },
+  "engines": {
+    "node": ">=18.17.0"
+  },
   "dependencies": {
-    "sharp": "^0.33.0"
+    "sharp": "^0.34.0"
   },
   "peerDependencies": {
     "@strapi/strapi": "^5.0.0"

@@ -1,13 +1,34 @@
 'use strict';
 
 const sharp = require('sharp');
-const path = require('path');
+
+const VALID_FITS = new Set(['cover', 'contain', 'fill', 'inside', 'outside']);
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{3,8}$/;
+
+//% ============================================
+//% Numeric helpers
+//% ============================================
+
+function int(val, min, max) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(min, Math.min(max, Math.round(n)));
+}
+
+function float(val, min, max) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(min, Math.min(max, n));
+}
 
 module.exports = ({ strapi }) => {
   const config = strapi.config.get('plugin::image-proxy');
   sharp.concurrency(config.sharpConcurrency ?? 2);
 
   return {
+    //% ============================================
+    //% validateDimensions
+    //% ============================================
     validateDimensions(w, h) {
       const { maxOutputWidth, maxOutputHeight } = strapi.config.get('plugin::image-proxy');
       if (w && w > maxOutputWidth) {
@@ -18,6 +39,9 @@ module.exports = ({ strapi }) => {
       }
     },
 
+    //% ============================================
+    //% pickBestSource
+    //% ============================================
     pickBestSource(formats, targetWidth, targetHeight) {
       if (!formats) return null;
       const target = Math.max(targetWidth || 0, targetHeight || 0);
@@ -28,81 +52,90 @@ module.exports = ({ strapi }) => {
       return candidates[0] ?? null;
     },
 
-    async checkPixelLimit(sourcePath) {
-      const { maxInputPixels } = strapi.config.get('plugin::image-proxy');
-      const meta = await sharp(sourcePath, { limitInputPixels: false }).metadata();
-      const pixels = (meta.width || 0) * (meta.height || 0);
-      if (pixels > maxInputPixels) {
-        throw new Error(
-          `Image is ${pixels}px (${meta.width}x${meta.height}), exceeds limit of ${maxInputPixels}px. ` +
-          `Use a Strapi-generated format as source instead.`
-        );
-      }
-      return meta;
-    },
-
+    //% ============================================
+    //% process
+    //% ============================================
     async process(sourcePath, params) {
       const config = strapi.config.get('plugin::image-proxy');
 
-      const w = params.w ? Number(params.w) : null;
-      const h = params.h ? Number(params.h) : null;
+      const w = int(params.w, 1, config.maxOutputWidth);
+      const h = int(params.h, 1, config.maxOutputHeight);
 
       this.validateDimensions(w, h);
 
-      // Path-based input — Sharp/libvips streams the file with shrink-on-load.
-      // sequentialRead avoids loading the full image into libvips cache.
+      /*
+       * Single Sharp instance: limitInputPixels rejects oversized images,
+       * failOn 'error' tolerates slightly corrupt uploads (phone cameras etc.),
+       * autoOrient fixes EXIF rotation before any transforms.
+       */
       let pipeline = sharp(sourcePath, {
         limitInputPixels: config.maxInputPixels,
         sequentialRead: true,
+        failOn: 'error',
+        autoOrient: true,
       });
 
-      // Resize + focal point
+      //+ Resize + focal point
       if (w || h) {
-        const fpx = params.fpx ? Number(params.fpx) : 0.5;
-        const fpy = params.fpy ? Number(params.fpy) : 0.5;
+        const fit = VALID_FITS.has(params.fit) ? params.fit : 'cover';
+        const fpx = float(params.fpx, 0, 1) ?? 0.5;
+        const fpy = float(params.fpy, 0, 1) ?? 0.5;
         pipeline = pipeline.resize(w, h, {
-          fit: params.fit || 'cover',
+          fit,
           position: `${fpx * 100}% ${fpy * 100}%`,
           withoutEnlargement: params.withoutEnlargement === 'true',
         });
       }
 
-      // Color & tone
+      //+ Color & tone
       if (params.grayscale === 'true')  pipeline = pipeline.grayscale();
       if (params.negate === 'true')     pipeline = pipeline.negate();
       if (params.normalize === 'true')  pipeline = pipeline.normalize();
-      if (params.tint)                  pipeline = pipeline.tint(params.tint);
-      if (params.gamma)                 pipeline = pipeline.gamma(Number(params.gamma));
+      if (params.tint && HEX_COLOR_RE.test(params.tint)) {
+        pipeline = pipeline.tint(params.tint);
+      }
+      if (params.gamma) {
+        const g = float(params.gamma, 1.0, 3.0);
+        if (g) pipeline = pipeline.gamma(g);
+      }
 
-      // Blur & sharpen
+      //+ Blur & sharpen
       if (params.blur) {
-        const sigma = Math.min(Math.max(Number(params.blur), 0.3), 1000);
-        pipeline = pipeline.blur(sigma);
+        const sigma = float(params.blur, 0.3, 1000);
+        if (sigma) pipeline = pipeline.blur(sigma);
       }
       if (params.sharpen === 'true')    pipeline = pipeline.sharpen();
-      if (params.median)                pipeline = pipeline.median(Number(params.median));
+      if (params.median) {
+        const m = int(params.median, 3, 99);
+        if (m && m % 2 === 1) pipeline = pipeline.median(m);
+      }
 
-      // Orientation
+      //+ Orientation (manual — autoOrient handles EXIF automatically)
       if (params.flip === 'true')       pipeline = pipeline.flip();
       if (params.flop === 'true')       pipeline = pipeline.flop();
-      if (params.rotate)                pipeline = pipeline.rotate(Number(params.rotate));
+      if (params.rotate) {
+        const deg = float(params.rotate, -360, 360);
+        if (deg !== null) pipeline = pipeline.rotate(deg);
+      }
 
-      // Format (always last)
+      //+ Strip all metadata (EXIF, GPS, ICC, XMP) from processed output
+      pipeline = pipeline.withMetadata(false);
+
+      //+ Format (always last)
       const format = params.format || config.defaultFormat;
-      const quality = params.q ? Number(params.q) : config.defaultQuality;
+      const quality = int(params.q, 1, 100) ?? config.defaultQuality;
       const formatOptions = { quality };
 
       if (format === 'webp') {
-        formatOptions.effort = params.effort ? Number(params.effort) : 4;
+        formatOptions.effort = int(params.effort, 0, 6) ?? 4;
         if (params.lossless === 'true') formatOptions.lossless = true;
       }
       if (format === 'avif') {
-        formatOptions.effort = params.effort ? Number(params.effort) : 4;
+        formatOptions.effort = int(params.effort, 0, 6) ?? 4;
       }
       if (format === 'png') {
         delete formatOptions.quality;
-        formatOptions.compressionLevel = params.compressionLevel
-          ? Number(params.compressionLevel) : 6;
+        formatOptions.compressionLevel = int(params.compressionLevel, 0, 9) ?? 6;
       }
 
       pipeline = pipeline.toFormat(format, formatOptions);

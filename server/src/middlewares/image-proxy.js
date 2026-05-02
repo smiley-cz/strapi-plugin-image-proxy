@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { existsSync } = require('fs');
+const { access } = require('fs/promises');
 
 const VALID_PARAMS = new Set([
   'w', 'h', 'fit', 'fpx', 'fpy', 'withoutEnlargement',
@@ -12,11 +12,11 @@ const VALID_PARAMS = new Set([
 ]);
 
 const VALID_INPUT_FORMATS = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif', 'tiff', 'gif']);
-const VALID_OUTPUT_FORMATS = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif', 'tiff']);
+const VALID_OUTPUT_FORMATS = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif', 'tiff', 'gif']);
 
 const MIME_MAP = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
-  webp: 'image/webp', avif: 'image/avif', tiff: 'image/tiff',
+  webp: 'image/webp', avif: 'image/avif', tiff: 'image/tiff', gif: 'image/gif',
 };
 
 function hasValidParams(query) {
@@ -25,6 +25,10 @@ function hasValidParams(query) {
 
 function sanitize(str) {
   return path.basename(str).replace(/[^a-zA-Z0-9_\-]/g, '');
+}
+
+async function fileExists(p) {
+  try { await access(p); return true; } catch { return false; }
 }
 
 module.exports = ({ strapi }) => ({
@@ -52,11 +56,19 @@ module.exports = ({ strapi }) => ({
     const hash = sanitize(filename.replace(`.${ext}`, ''));
     const cacheKey = cacheService.buildKey(hash, query);
 
+    //+ ETag / conditional response
+    const etag = `"${cacheKey}"`;
+    if (ctx.get('If-None-Match') === etag) {
+      ctx.status = 304;
+      return;
+    }
+
     // Cache hit
     const cached = await cacheService.get(cacheKey, outputFormat);
     if (cached) {
       ctx.set('Content-Type', MIME_MAP[outputFormat] || 'image/webp');
       ctx.set('Cache-Control', 'public, max-age=31536000, immutable');
+      ctx.set('ETag', etag);
       ctx.set('X-Image-Cache', 'HIT');
       ctx.body = cached;
       return;
@@ -66,7 +78,7 @@ module.exports = ({ strapi }) => ({
     let sourcePath = path.join(uploadDir, `${hash}.${ext}`);
 
     try {
-      // Prefer a Strapi-generated smaller format as source where possible
+      //+ Prefer a Strapi-generated smaller format as source where possible
       const targetW = query.w ? Number(query.w) : null;
       const targetH = query.h ? Number(query.h) : null;
 
@@ -80,19 +92,17 @@ module.exports = ({ strapi }) => ({
           const betterSource = sharpService.pickBestSource(file.formats, targetW, targetH);
           if (betterSource) {
             const candidate = path.join(uploadDir, path.basename(betterSource.url));
-            if (existsSync(candidate)) sourcePath = candidate;
+            if (await fileExists(candidate)) sourcePath = candidate;
           }
         }
       }
-
-      // Safety: check pixel limit on chosen source
-      await sharpService.checkPixelLimit(sourcePath);
 
       const processed = await sharpService.process(sourcePath, query);
       await cacheService.set(cacheKey, outputFormat, processed);
 
       ctx.set('Content-Type', MIME_MAP[outputFormat] || 'image/webp');
       ctx.set('Cache-Control', 'public, max-age=31536000, immutable');
+      ctx.set('ETag', etag);
       ctx.set('X-Image-Cache', 'MISS');
       ctx.body = processed;
 
