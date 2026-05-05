@@ -14,7 +14,7 @@ module.exports = {
     maxOutputWidth: 4000,               // 4000 px
     maxOutputHeight: 4000,              // 4000 px
     sharpConcurrency: 2,                // libvips threads per image
-    maxConcurrentJobs: 4,               // simultaneous Sharp pipelines (queue gates the rest)
+    maxConcurrentJobs: 2,               // simultaneous Sharp pipelines (queue gates the rest); 2 × sharpConcurrency=2 fits Node's default UV_THREADPOOL_SIZE=4
     urlPrefix: '/uploads/',             // URL path prefix to intercept
     fileLookupTtl: 30,                  // seconds; LRU TTL for plugin::upload.file lookups (0 = disabled)
     fileLookupMax: 1000,                // LRU max entries

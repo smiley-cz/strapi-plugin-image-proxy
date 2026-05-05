@@ -84,7 +84,7 @@ module.exports = {
       maxOutputWidth: 4000,               // 4000 px
       maxOutputHeight: 4000,              // 4000 px
       sharpConcurrency: 2,                // libvips threads per image
-      maxConcurrentJobs: 4,               // simultaneous Sharp pipelines (queue gates the rest)
+      maxConcurrentJobs: 2,               // simultaneous Sharp pipelines (queue gates the rest)
       urlPrefix: '/uploads/',             // URL path prefix to intercept
       fileLookupTtl: 30,                  // seconds; in-memory cache for DB lookups (0 disables)
       fileLookupMax: 1000,                // LRU max entries for the lookup cache
@@ -106,7 +106,7 @@ module.exports = {
 | `maxOutputWidth` | integer | `4000` (4000 px) | Max allowed output width. Requests outside `1–maxOutputWidth` are rejected with `400` |
 | `maxOutputHeight` | integer | `4000` (4000 px) | Max allowed output height. Requests outside `1–maxOutputHeight` are rejected with `400` |
 | `sharpConcurrency` | integer | `2` | libvips threads used **per image**. Keep low on shared VPS, increase on dedicated machines |
-| `maxConcurrentJobs` | integer | `4` | Maximum **simultaneous** Sharp pipelines. Additional requests are queued (FIFO). Prevents thread-pool starvation under bursts |
+| `maxConcurrentJobs` | integer | `2` | Maximum **simultaneous** Sharp pipelines. Additional requests are queued (FIFO). Default × `sharpConcurrency` (2 × 2 = 4) matches Node's default `UV_THREADPOOL_SIZE`. Increase together with `UV_THREADPOOL_SIZE` for higher throughput |
 | `urlPrefix` | string | `/uploads/` | URL path prefix to intercept. Must start and end with `/`. Change this if Strapi serves uploads from a different mount point |
 | `fileLookupTtl` | number | `30` | Seconds to cache `plugin::upload.file` lookups in memory. Lifecycle hooks invalidate on update/delete; this is just a TTL safety net. Set `0` to disable |
 | `fileLookupMax` | integer | `1000` | Max entries in the in-memory lookup cache (LRU eviction) |
@@ -491,11 +491,11 @@ Two independent knobs control Sharp's resource usage:
 
 Effective thread usage at peak load is approximately `sharpConcurrency × maxConcurrentJobs`. Set `UV_THREADPOOL_SIZE` to at least that value. The plugin warns at boot if it isn't.
 
-| Scenario | `sharpConcurrency` | `maxConcurrentJobs` | `UV_THREADPOOL_SIZE` |
-|---|---|---|---|
-| Shared VPS (1–2 cores) | `1` | `2` | `4` (default) |
-| Small dedicated (4 cores) | `2` | `4` | `8` |
-| Medium dedicated (8 cores) | `2`–`4` | `4`–`6` | `16` |
-| Large dedicated (16+ cores) | `4` | `8`–`16` | `32`–`64` |
+| Scenario | `sharpConcurrency` | `maxConcurrentJobs` | Product | `UV_THREADPOOL_SIZE` |
+|---|---|---|---|---|
+| Default / shared VPS (1–2 cores) | `2` | `2` | `4` | `4` (Node default) |
+| Small dedicated (4 cores) | `2` | `4` | `8` | `8` |
+| Medium dedicated (8 cores) | `2` | `8` | `16` | `16` |
+| Large dedicated (16+ cores) | `4` | `8` | `32` | `32` |
 
-Keep `sharpConcurrency × maxConcurrentJobs` at or below your core count to avoid thread contention.
+The plugin warns at boot if `UV_THREADPOOL_SIZE < sharpConcurrency × maxConcurrentJobs`. Keep that product at or below your core count to avoid contention with the rest of the libuv pool (DNS, fs, crypto).
