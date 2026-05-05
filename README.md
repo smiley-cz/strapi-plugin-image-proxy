@@ -13,14 +13,19 @@ Intercepts requests to `/uploads/` URLs that contain valid transformation parame
 - Automatic EXIF orientation fix (`autoOrient`) — mobile photos display correctly without explicit `?rotate=`
 - Disk cache with configurable TTL and ETag/304 support
 - Automatically uses Strapi-generated thumbnail formats as source where possible (avoids processing large originals at request time)
-- Path-based Sharp input with `sequentialRead` — memory-efficient, handles large files safely
-- Safety limits: max input megapixels, max output dimensions, Sharp concurrency cap
+- Works with **any Strapi V5 upload provider** — local disk, AWS S3, Cloudinary, etc. Remote sources are fetched on demand and cached locally
+- Path-based Sharp input with `sequentialRead` for local files; in-memory buffer for remote — both are memory-efficient
+- Safety limits: max input megapixels, max output dimensions, libvips threads per image, and a global cap on simultaneous Sharp pipelines
+- Bounded concurrency queue prevents thread-pool starvation under traffic spikes
+- Short-lived in-memory cache for `plugin::upload.file` lookups — responsive `srcset` does not hammer the DB on cold cache
 - Dimension validation: requests with `w` or `h` outside the allowed range are rejected with a `400` response before any processing
 - `withoutEnlargement` is `true` by default — images are never upscaled beyond their original dimensions unless explicitly opted out
 - All query parameters are validated and clamped to safe ranges
-- Atomic cache writes — no partial files on crash
-- Auto-invalidates cache when files are deleted or replaced in Strapi
-- Admin API endpoints for cache invalidation, flush, and stats
+- All metadata (EXIF, GPS, ICC, XMP) is stripped by default; opt-in flags to keep specific blocks
+- Cache keys are computed only from whitelisted parameters — tracking params (`utm_*`, etc.) cannot pollute the cache
+- Atomic cache writes — no partial files on crash; orphan `.tmp` files are swept on bootstrap
+- Auto-invalidates disk and lookup caches when files are deleted or replaced in Strapi
+- Admin API endpoints for cache invalidation, flush, and stats (results memoised for 60 s)
 - Falls through gracefully on any error — never breaks image delivery
 
 ---
@@ -72,13 +77,18 @@ module.exports = {
     resolve: './src/plugins/image-proxy',
     config: {
       cacheDir: '/var/cache/strapi-image-proxy',
-      ttl: 60 * 60 * 24 * 30,            // 30 days
+      ttl: 60 * 60 * 24 * 30,            // 30 days; set to 0 to never expire
       defaultFormat: 'webp',
       defaultQuality: 85,                 // 1–100
       maxInputPixels: 100_000_000,        // 100 megapixels
       maxOutputWidth: 4000,               // 4000 px
       maxOutputHeight: 4000,              // 4000 px
-      sharpConcurrency: 2,                // 2 threads per image
+      sharpConcurrency: 2,                // libvips threads per image
+      maxConcurrentJobs: 4,               // simultaneous Sharp pipelines (queue gates the rest)
+      urlPrefix: '/uploads/',             // URL path prefix to intercept
+      fileLookupTtl: 30,                  // seconds; in-memory cache for DB lookups (0 disables)
+      fileLookupMax: 1000,                // LRU max entries for the lookup cache
+      tmpFileMaxAge: 3600,                // seconds; orphan .tmp files older than this are swept on bootstrap
     }
   }
 };
@@ -89,13 +99,18 @@ module.exports = {
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `cacheDir` | string | `<project>/.cache/image-proxy` | Directory where processed images are cached on disk |
-| `ttl` | number | `2592000` (30 days) | Cache TTL in seconds. Set to `0` to disable expiration |
+| `ttl` | number | `2592000` (30 days) | Cache TTL in seconds. Set to `0` to keep cached files indefinitely |
 | `defaultFormat` | string | `webp` | Output format when none specified in request. One of: `jpg`, `jpeg`, `png`, `webp`, `avif`, `tiff`, `gif` |
 | `defaultQuality` | number | `85` (1–100) | Output quality when none specified in request |
 | `maxInputPixels` | integer | `100000000` (100 megapixels) | Max source image size (width × height). Images exceeding this are served unprocessed |
 | `maxOutputWidth` | integer | `4000` (4000 px) | Max allowed output width. Requests outside `1–maxOutputWidth` are rejected with `400` |
 | `maxOutputHeight` | integer | `4000` (4000 px) | Max allowed output height. Requests outside `1–maxOutputHeight` are rejected with `400` |
-| `sharpConcurrency` | integer | `2` (2 threads/image) | Threads per image. Keep low on shared VPS, increase on dedicated machines |
+| `sharpConcurrency` | integer | `2` | libvips threads used **per image**. Keep low on shared VPS, increase on dedicated machines |
+| `maxConcurrentJobs` | integer | `4` | Maximum **simultaneous** Sharp pipelines. Additional requests are queued (FIFO). Prevents thread-pool starvation under bursts |
+| `urlPrefix` | string | `/uploads/` | URL path prefix to intercept. Must start and end with `/`. Change this if Strapi serves uploads from a different mount point |
+| `fileLookupTtl` | number | `30` | Seconds to cache `plugin::upload.file` lookups in memory. Lifecycle hooks invalidate on update/delete; this is just a TTL safety net. Set `0` to disable |
+| `fileLookupMax` | integer | `1000` | Max entries in the in-memory lookup cache (LRU eviction) |
+| `tmpFileMaxAge` | number | `3600` | Seconds. On bootstrap, orphan `.tmp` files in `cacheDir` older than this are removed. Set `0` to disable the sweep |
 
 ---
 
@@ -176,6 +191,23 @@ All numeric parameters are validated and clamped to their allowed range. Invalid
 | `rotate` | number | -360–360 | Rotate by degrees |
 
 > **Note:** EXIF orientation is applied automatically via `autoOrient`. You only need `rotate` for additional manual rotation beyond what the camera metadata specifies.
+
+### Metadata retention
+
+By default, **all** metadata (EXIF, GPS, ICC profile, XMP) is stripped from processed images. EXIF on photos taken with a phone often contains GPS coordinates, device IDs, and timestamps; stripping is the safe default. Opt back in only when you need it.
+
+| Param | Type | Description |
+|---|---|---|
+| `keepMetadata` | boolean | Keep **all** metadata blocks (EXIF + ICC + XMP). Convenience flag |
+| `keepExif` | boolean | Keep EXIF only (camera, lens, GPS, timestamps) |
+| `keepIcc` | boolean | Keep the ICC color profile (useful for color-critical workflows) |
+| `keepXmp` | boolean | Keep XMP metadata (Adobe / Photoshop edit history, ratings) |
+
+> **Privacy warning:** EXIF can leak GPS coordinates and device identifiers. Only enable `keepExif` / `keepMetadata` for assets that have already been scrubbed by your editorial workflow.
+
+### Adding new transformation parameters
+
+The whitelist of accepted query params lives in [`server/src/constants.js`](server/src/constants.js). Adding a new param is a one-line change there, plus a handler in [`server/src/services/sharp.js`](server/src/services/sharp.js). Anything not in the whitelist is ignored — both at request-handling time and when computing cache keys, so unknown query strings (`utm_source`, tracking tokens, etc.) cannot pollute the cache.
 
 ---
 
@@ -328,6 +360,17 @@ To avoid processing huge originals at request time, the plugin checks if Strapi 
 
 If no suitable Strapi format exists, the original is used with `sequentialRead: true` and `limitInputPixels` set to the configured maximum. If the original exceeds the pixel limit, the request falls through to Strapi's default static handler — the original is still served, just unprocessed.
 
+## Upload provider support (local, S3, Cloudinary, …)
+
+The plugin works with any Strapi V5 upload provider. The `plugin::upload.file` record's `url` field is the source of truth:
+
+- **Relative URLs** (e.g. `/uploads/foo_abc123.jpg`) — local disk provider. The file is read from `<publicDir><url>` and streamed into Sharp.
+- **Absolute URLs** (e.g. `https://my-bucket.s3.amazonaws.com/foo.jpg`) — remote provider. The plugin fetches the source over HTTPS (10 s timeout), processes it, and caches the result locally. Subsequent requests for the same variant are served from the local disk cache without hitting the remote provider.
+
+For the proxy to fire, your frontend must request images through the **Strapi origin**, not directly from the cloud bucket. This typically means leaving `image.url` as-is in your API responses and ensuring your frontend helper points to your Strapi domain. The included SvelteKit helper does this via `strapiMedia()`.
+
+If your provider serves uploads from a path other than `/uploads/` (e.g. `/media/` or `/static/uploads/`), set `urlPrefix` accordingly in plugin config.
+
 ---
 
 ## Cache behaviour
@@ -439,15 +482,20 @@ ENV UV_THREADPOOL_SIZE=8
 ENV MALLOC_ARENA_MAX=2
 ```
 
-### Tuning `sharpConcurrency`
+### Tuning `sharpConcurrency` and `maxConcurrentJobs`
 
-The plugin defaults to `sharpConcurrency: 2` (threads per image). This is a good trade-off for shared VPS. On dedicated machines:
+Two independent knobs control Sharp's resource usage:
 
-| Scenario | `sharpConcurrency` | `UV_THREADPOOL_SIZE` |
-|---|---|---|
-| Shared VPS (1–2 cores) | `1` | `4` (default) |
-| Small dedicated (4 cores) | `2` | `4` |
-| Medium dedicated (8 cores) | `4` | `8` |
-| Large dedicated (16+ cores) | `4`–`8` | `16` |
+- **`sharpConcurrency`** — libvips threads used **per image**. More threads make a single image faster but proportionally hungrier.
+- **`maxConcurrentJobs`** — how many images can be processed **at the same time**. Anything over this limit is queued (FIFO). Prevents traffic spikes from spawning unbounded pipelines and starving the libuv thread pool.
 
-Keep `sharpConcurrency × concurrent_requests` below your core count to avoid thread contention.
+Effective thread usage at peak load is approximately `sharpConcurrency × maxConcurrentJobs`. Set `UV_THREADPOOL_SIZE` to at least that value. The plugin warns at boot if it isn't.
+
+| Scenario | `sharpConcurrency` | `maxConcurrentJobs` | `UV_THREADPOOL_SIZE` |
+|---|---|---|---|
+| Shared VPS (1–2 cores) | `1` | `2` | `4` (default) |
+| Small dedicated (4 cores) | `2` | `4` | `8` |
+| Medium dedicated (8 cores) | `2`–`4` | `4`–`6` | `16` |
+| Large dedicated (16+ cores) | `4` | `8`–`16` | `32`–`64` |
+
+Keep `sharpConcurrency × maxConcurrentJobs` at or below your core count to avoid thread contention.

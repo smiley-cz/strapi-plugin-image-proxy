@@ -1,56 +1,41 @@
 'use strict';
 
 const path = require('path');
-const { access } = require('fs/promises');
-
-const VALID_PARAMS = new Set([
-  'w', 'h', 'fit', 'fpx', 'fpy', 'withoutEnlargement',
-  'f', 'format', 'q', 'lossless', 'effort', 'compressionLevel',
-  'grayscale', 'negate', 'normalize', 'tint', 'gamma',
-  'blur', 'sharpen', 'median',
-  'flip', 'flop', 'rotate',
-]);
-
-const VALID_INPUT_FORMATS = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif', 'tiff', 'gif']);
-const VALID_OUTPUT_FORMATS = new Set(['jpg', 'jpeg', 'png', 'webp', 'avif', 'tiff', 'gif']);
-
-const MIME_MAP = {
-  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
-  webp: 'image/webp', avif: 'image/avif', tiff: 'image/tiff', gif: 'image/gif',
-};
+const {
+  VALID_PARAMS,
+  VALID_INPUT_FORMATS,
+  VALID_OUTPUT_FORMATS,
+  MIME_MAP,
+} = require('../constants');
+const { resolveSource } = require('../utils/source-loader');
 
 function hasValidParams(query) {
-  return Object.keys(query).some(k => VALID_PARAMS.has(k));
+  for (const k of Object.keys(query)) if (VALID_PARAMS.has(k)) return true;
+  return false;
 }
 
 function sanitize(str) {
   return path.basename(str).replace(/[^a-zA-Z0-9_\-]/g, '');
 }
 
-async function fileExists(p) {
-  try { await access(p); return true; } catch { return false; }
-}
-
 module.exports = ({ strapi }) => ({
   async process(ctx, next) {
+    const config = strapi.config.get('plugin::image-proxy');
     const reqPath = ctx.path;
     const query = ctx.query;
 
-    if (!reqPath.startsWith('/uploads/')) return next();
+    if (!reqPath.startsWith(config.urlPrefix)) return next();
 
     const filename = path.basename(reqPath);
     const extMatch = filename.match(/\.([^.]+)$/);
     if (!extMatch) return next();
 
     const ext = extMatch[1].toLowerCase();
-
     if (!VALID_INPUT_FORMATS.has(ext)) return next();
     if (!hasValidParams(query)) return next();
 
     const requestedFormat = query.format || query.f;
     if (requestedFormat && !VALID_OUTPUT_FORMATS.has(requestedFormat)) return next();
-
-    const config = strapi.config.get('plugin::image-proxy');
 
     //+ Reject invalid or out-of-range dimensions early (before touching Sharp)
     if (query.w != null) {
@@ -72,6 +57,7 @@ module.exports = ({ strapi }) => ({
 
     const cacheService = strapi.plugin('image-proxy').service('cache');
     const sharpService = strapi.plugin('image-proxy').service('sharp');
+    const fileLookup = strapi.plugin('image-proxy').service('fileLookup');
 
     const outputFormat = requestedFormat || ext;
     const hash = sanitize(filename.replace(`.${ext}`, ''));
@@ -95,30 +81,36 @@ module.exports = ({ strapi }) => ({
       return;
     }
 
-    const uploadDir = path.join(strapi.dirs.static.public, 'uploads');
-    let sourcePath = path.join(uploadDir, `${hash}.${ext}`);
-
     try {
-      //+ Prefer a Strapi-generated smaller format as source where possible
       const targetW = query.w ? Number(query.w) : null;
       const targetH = query.h ? Number(query.h) : null;
 
-      if (targetW || targetH) {
-        const file = await strapi.db.query('plugin::upload.file').findOne({
-          where: { hash },
-          select: ['formats']
-        });
+      /*
+       * Resolve which URL/path to feed Sharp. Order of preference:
+       *   1. Smallest Strapi-generated format that still covers target size
+       *   2. The original file.url
+       *   3. Local fallback path: <publicDir><urlPrefix><hash>.<ext>
+       *
+       * The lookup is cached in-memory for ~30 s (configurable) so a
+       * responsive <img srcset> doesn't hammer the DB on cold cache.
+       */
+      const file = await fileLookup.findByHash(hash);
 
-        if (file?.formats) {
-          const betterSource = sharpService.pickBestSource(file.formats, targetW, targetH);
-          if (betterSource) {
-            const candidate = path.join(uploadDir, path.basename(betterSource.url));
-            if (await fileExists(candidate)) sourcePath = candidate;
-          }
-        }
+      let sourceUrl = null;
+      if ((targetW || targetH) && file?.formats) {
+        const better = sharpService.pickBestSource(file.formats, targetW, targetH);
+        if (better?.url) sourceUrl = better.url;
+      }
+      if (!sourceUrl) sourceUrl = file?.url ?? `${config.urlPrefix}${hash}.${ext}`;
+
+      const source = await resolveSource(sourceUrl, strapi);
+      if (!source) {
+        // Asset not on local disk and no remote URL — let Strapi's static
+        // handler produce its own 404.
+        return next();
       }
 
-      const processed = await sharpService.process(sourcePath, query);
+      const processed = await sharpService.process(source, query);
       await cacheService.set(cacheKey, outputFormat, processed);
 
       ctx.set('Content-Type', MIME_MAP[outputFormat] || 'image/webp');
@@ -126,10 +118,18 @@ module.exports = ({ strapi }) => ({
       ctx.set('ETag', etag);
       ctx.set('X-Image-Cache', 'MISS');
       ctx.body = processed;
-
     } catch (err) {
-      strapi.log.warn(`[image-proxy] Processing failed for ${filename}: ${err.message}`);
+      strapi.log.warn(
+        `[image-proxy] Processing failed for ${filename}: ${err.message}`,
+        {
+          error: err.message,
+          stack: err.stack,
+          path: reqPath,
+          query,
+          outputFormat,
+        }
+      );
       return next(); // always fall through — never break image delivery
     }
-  }
+  },
 });
