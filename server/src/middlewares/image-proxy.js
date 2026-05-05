@@ -76,7 +76,6 @@ module.exports = ({ strapi }) => ({
       ctx.set('Content-Type', MIME_MAP[outputFormat] || 'image/webp');
       ctx.set('Cache-Control', 'public, max-age=31536000, immutable');
       ctx.set('ETag', etag);
-      ctx.set('X-Image-Cache', 'HIT');
       ctx.body = cached;
       return;
     }
@@ -116,7 +115,6 @@ module.exports = ({ strapi }) => ({
       ctx.set('Content-Type', MIME_MAP[outputFormat] || 'image/webp');
       ctx.set('Cache-Control', 'public, max-age=31536000, immutable');
       ctx.set('ETag', etag);
-      ctx.set('X-Image-Cache', 'MISS');
       ctx.body = processed;
     } catch (err) {
       strapi.log.warn(
