@@ -344,13 +344,35 @@ export function imageSrcset(image, widths, opts = {}) {
 
 ## Admin API
 
-All endpoints require admin authentication.
+All endpoints require admin authentication (admin JWT in `Authorization: Bearer <token>`). They are mounted on the admin server, **not** under `/api`.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/image-proxy/cache/stats` | Cache file count and total size |
-| `DELETE` | `/api/image-proxy/cache/:hash` | Invalidate all variants for one image |
-| `DELETE` | `/api/image-proxy/cache` | Flush entire cache |
+| `GET` | `/image-proxy/cache/stats` | Cache file count and total size |
+| `DELETE` | `/image-proxy/cache/:hash` | Invalidate all variants for one image |
+| `DELETE` | `/image-proxy/cache` | Flush entire cache |
+
+### Calling the admin API
+
+```bash
+# 1. Get an admin JWT
+TOKEN=$(curl -s -X POST https://your-strapi-host/admin/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"YourPassword"}' \
+  | jq -r '.data.token')
+
+# 2. Call the endpoint
+curl -s https://your-strapi-host/image-proxy/cache/stats \
+  -H "Authorization: Bearer $TOKEN" | jq
+```
+
+From browser DevTools while logged into the Strapi admin panel:
+```js
+const token = JSON.parse(sessionStorage.getItem('jwtToken') || localStorage.getItem('jwtToken'));
+fetch('/image-proxy/cache/stats', {
+  headers: { Authorization: `Bearer ${token}` },
+}).then(r => r.json()).then(console.log);
+```
 
 ---
 
