@@ -40,10 +40,20 @@ Intercepts requests to `/uploads/` URLs that contain valid transformation parame
 
 ## Installation
 
-From the Strapi project:
+From the Strapi project, pin a 1.x tag range:
+
+```json
+{
+  "dependencies": {
+    "strapi-plugin-image-proxy": "git+https://github.com/smiley-cz/strapi-plugin-image-proxy.git#semver:^1.0.0"
+  }
+}
+```
+
+Then `npm install`. Same specifier on the command line:
 
 ```bash
-npm install github:smiley-cz/strapi-plugin-image-proxy
+npm install git+https://github.com/smiley-cz/strapi-plugin-image-proxy.git#semver:^1.0.0
 ```
 
 Strapi loads the plugin from `node_modules` because `package.json` sets `strapi.kind` to `plugin` and `strapi.name` to `image-proxy`. The `exports` map must include `./package.json` — Strapi discovers installed plugins with `require('<package>/package.json')`, and Node will reject that lookup if the subpath is missing. Enable the plugin in `config/plugins.js`. Do not set `resolve` for a GitHub/npm install. Use `resolve` only when the plugin is a folder at `src/plugins/image-proxy`.
@@ -58,12 +68,6 @@ module.exports = {
 ```
 
 `sharp` is a dependency of this package, so the GitHub install brings it in.
-
-Append `#` and a tag or commit to pin a revision:
-
-```bash
-npm install github:smiley-cz/strapi-plugin-image-proxy#v1.0.1
-```
 
 ---
 
