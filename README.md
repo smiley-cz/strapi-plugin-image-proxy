@@ -40,27 +40,29 @@ Intercepts requests to `/uploads/` URLs that contain valid transformation parame
 
 ## Installation
 
-Copy the plugin into your Strapi project:
+From the Strapi project:
 
-```
-src/plugins/image-proxy/
+```bash
+npm install github:smiley-cz/strapi-plugin-image-proxy
 ```
 
-Register it in `config/plugins.js`:
+Strapi loads the plugin from `node_modules` because `package.json` sets `strapi.kind` to `plugin` and `strapi.name` to `image-proxy`. Enable it in `config/plugins.js`. Leave `resolve` commented out. Uncomment it when the plugin is a folder at `src/plugins/image-proxy`.
 
 ```js
 module.exports = {
   'image-proxy': {
     enabled: true,
-    resolve: './src/plugins/image-proxy'
+    // resolve: './src/plugins/image-proxy'
   }
 };
 ```
 
-Install Sharp in your Strapi project if not already present:
+`sharp` is a dependency of this package, so the GitHub install brings it in.
+
+Append `#` and a tag or commit to pin a revision:
 
 ```bash
-npm install sharp
+npm install github:smiley-cz/strapi-plugin-image-proxy#v1.0.0
 ```
 
 ---
@@ -74,7 +76,7 @@ All options are optional — defaults work out of the box.
 module.exports = {
   'image-proxy': {
     enabled: true,
-    resolve: './src/plugins/image-proxy',
+    // resolve: './src/plugins/image-proxy',
     config: {
       // cacheDir: '/var/cache/strapi-image-proxy', // default: <project>/.cache/image-proxy (see cacheDir note)
       ttl: 60 * 60 * 24 * 30,            // 30 days; set to 0 to never expire

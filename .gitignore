@@ -1,5 +1,9 @@
 node_modules/
 .cache/
+sync-to-strapi.sh
+AGENTS.md
+.cursor/
+.claude/
 *.log
 .DS_Store
 .idea/
