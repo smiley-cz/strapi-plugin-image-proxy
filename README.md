@@ -46,7 +46,7 @@ From the Strapi project:
 npm install github:smiley-cz/strapi-plugin-image-proxy
 ```
 
-Strapi loads the plugin from `node_modules` because `package.json` sets `strapi.kind` to `plugin` and `strapi.name` to `image-proxy`. Enable it in `config/plugins.js`. Leave `resolve` commented out. Uncomment it when the plugin is a folder at `src/plugins/image-proxy`.
+Strapi loads the plugin from `node_modules` because `package.json` sets `strapi.kind` to `plugin` and `strapi.name` to `image-proxy`. The `exports` map must include `./package.json` — Strapi discovers installed plugins with `require('<package>/package.json')`, and Node will reject that lookup if the subpath is missing. Enable the plugin in `config/plugins.js`. Do not set `resolve` for a GitHub/npm install. Use `resolve` only when the plugin is a folder at `src/plugins/image-proxy`.
 
 ```js
 module.exports = {
@@ -62,7 +62,7 @@ module.exports = {
 Append `#` and a tag or commit to pin a revision:
 
 ```bash
-npm install github:smiley-cz/strapi-plugin-image-proxy#v1.0.0
+npm install github:smiley-cz/strapi-plugin-image-proxy#v1.0.1
 ```
 
 ---
