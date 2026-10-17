@@ -9,7 +9,7 @@ Intercepts requests to `/uploads/` URLs that contain valid transformation parame
 ## Features
 
 - On-demand resize, crop, format conversion, blur, sharpen, rotate, flip, grayscale, and more
-- Focal point-aware cropping via `fpx`/`fpy` params
+- Focal point support via `fpx`/`fpy`. Sharp snaps these to a 3×3 gravity and only crops when **both** `w` and `h` are set. Responsive width-only srcsets do not crop; the SvelteKit helper applies the real focal point with CSS `object-position`
 - Automatic EXIF orientation fix (`autoOrient`) — mobile photos display correctly without explicit `?rotate=`
 - Disk cache with configurable TTL and ETag/304 support
 - Automatically uses Strapi-generated thumbnail formats as source where possible (avoids processing large originals at request time)
@@ -153,8 +153,8 @@ All numeric parameters are validated and clamped to their allowed range. Invalid
 | `w` | number | 1–`maxOutputWidth` | Output width in pixels. Values outside this range return `400` |
 | `h` | number | 1–`maxOutputHeight` | Output height in pixels. Values outside this range return `400` |
 | `fit` | string | `cover`, `contain`, `fill`, `inside`, `outside` | Sharp fit mode (default: `cover`) |
-| `fpx` | number | 0–1 | Focal point X (default: `0.5`) |
-| `fpy` | number | 0–1 | Focal point Y (default: `0.5`) |
+| `fpx` | number | 0–1 | Focal point X (default: `0.5`). See [Focal point](#focal-point) |
+| `fpy` | number | 0–1 | Focal point Y (default: `0.5`). See [Focal point](#focal-point) |
 | `withoutEnlargement` | boolean | | Never upscale beyond original dimensions (default: `true`). Set `withoutEnlargement=false` to allow upscaling |
 
 ### Format
@@ -213,7 +213,43 @@ The whitelist of accepted query params lives in [`server/src/constants.js`](serv
 
 ## SvelteKit helper
 
-Utilities for building proxied image URLs from Strapi image objects. Place in your SvelteKit project:
+Drop-in utilities for building proxied image URLs, `<img>` props, and a `<picture>` format cascade from Strapi image objects.
+
+| Helper | Returns | When to use |
+|---|---|---|
+| `imageUrl(image, opts)` | `string` (URL) | Background images, custom markup, anywhere you just need a URL |
+| `imageSrcset(image, widths, opts)` | `string` (width-descriptor srcset) | Low-level primitive when you need just a srcset |
+| `imageDprSrcset(image, w, h, dpr, opts)` | `string` (DPR srcset) | Fixed-size images served at multiple pixel densities |
+| `focalPointToObjectPosition(focalPoint)` | CSS `object-position` or `undefined` | When you position the crop yourself |
+| `imageProps(image, opts)` | full `<img>` props, including `style` when a focal point is set | Single-format `<img>`. Spread onto `<img>` |
+| `pictureProps(image, opts)` | `{ sources, img }` | **Recommended for content images.** avif and webp `<source>`s, jpg `<img>` fallback |
+
+### Focal point
+
+`fpx` and `fpy` do not crop to the exact focal pixel.
+
+Sharp runs the focal point only inside `resize`, and only the `position` gravity. The plugin buckets each axis into thirds: `<= 0.33` is left or top, `>= 0.67` is right or bottom, and the middle third is centre. A focal point of `0.40, 0.40` is still `centre`.
+
+That gravity runs only when **both** `w` and `h` are present. A width-only URL keeps the source aspect ratio, so `position` changes nothing. The params are still part of the cache key, so sending them on a width-only URL stores a duplicate variant.
+
+Do not pass one `h` through a width-descriptor srcset. `imageSrcset(image, [400, 800, 1200], { h: 600 })` requests 400×600, 800×600, and 1200×600. Those are three aspect ratios, and the layout breaks.
+
+Use the mode the helper already picks:
+
+- **Responsive** (`widths`, or neither `widths` nor `w`). Omit `h`. `imageProps` and `pictureProps` set `style="object-position: X% Y%"` from `image.focalPoint`, using the real percentage rather than the 3×3 snap. The element needs `object-fit: cover` (`object-cover` in Tailwind) or that position does nothing. A later `style` attribute on the `<img>` replaces the one from the helper.
+- **Fixed box** (`w` and `h`, no `widths`). Sharp crops with the 3×3 gravity. `imageDprSrcset` scales both sides per DPR (`w * d`, `h * d`), so 1x and 2x keep the same aspect ratio.
+
+Strapi may store `focalPoint` as 0–1 or as 0–100. The helper normalizes both.
+
+Server-side crop of the exact focal pixel, with a proportional `h` per srcset width, is not implemented. Until it is, responsive images should keep using `object-position`.
+
+### Format
+
+The plugin's own defaults (`defaultFormat: webp`, `defaultQuality: 85`) apply only when the URL omits `f` / `format` and `q`.
+
+The helper does not rely on that. `imageUrl` always sends `f=jpg` and `q=70` unless you pass `format` or `q`. That keeps the `<img>` fallback explicit. `pictureProps` then adds avif and webp `<source>` elements, so each displayed size is three cached files. Use `imageProps` when you want the jpg only.
+
+Place in your SvelteKit project:
 
 ```js
 // src/lib/image.js
@@ -224,45 +260,85 @@ import { strapiMedia } from '$lib/api/strapi';
  * @property {string}  url
  * @property {string}  [alternativeText]
  * @property {string}  [updatedAt]
+ * @property {number}  [width]
+ * @property {number}  [height]
  * @property {{ x: number, y: number }} [focalPoint]
  */
 
 /**
+ * Full set of params accepted by the image-proxy plugin.
+ * Mirrors VALID_PARAMS in `server/src/constants.js` — see "Supported Parameters" above for the full list.
+ *
  * @typedef {Object} ImageTransformOptions
- * @property {number}  [w]      - Output width in pixels
- * @property {number}  [h]      - Output height in pixels
- * @property {string}  [format] - Output format (webp, avif, jpg, png, gif)
- * @property {number}  [q]      - Quality 1–100
- * @property {string}  [fit]    - Fit mode: cover, contain, fill, inside, outside
+ * @property {number}  [w]
+ * @property {number}  [h]
+ * @property {'cover'|'contain'|'fill'|'inside'|'outside'} [fit]
+ * @property {number}  [fpx]
+ * @property {number}  [fpy]
+ * @property {boolean} [withoutEnlargement]
+ * @property {'webp'|'avif'|'jpg'|'jpeg'|'png'|'tiff'|'gif'} [format]
+ * @property {number}  [q]
+ * @property {boolean} [lossless]
+ * @property {number}  [effort]
+ * @property {number}  [compressionLevel]
+ * @property {boolean} [grayscale]
+ * @property {boolean} [negate]
+ * @property {boolean} [normalize]
+ * @property {string}  [tint]
+ * @property {number}  [gamma]
+ * @property {number}  [blur]
+ * @property {boolean} [sharpen]
+ * @property {number}  [median]
+ * @property {boolean} [flip]
+ * @property {boolean} [flop]
+ * @property {number}  [rotate]
+ * @property {boolean} [keepMetadata]
+ * @property {boolean} [keepExif]
+ * @property {boolean} [keepIcc]
+ * @property {boolean} [keepXmp]
  */
+
+const PASSTHROUGH_PARAMS = /** @type {const} */ ([
+  'w', 'h', 'fit', 'withoutEnlargement',
+  'q', 'lossless', 'effort', 'compressionLevel',
+  'grayscale', 'negate', 'normalize', 'tint', 'gamma',
+  'blur', 'sharpen', 'median',
+  'flip', 'flop', 'rotate',
+  'keepMetadata', 'keepExif', 'keepIcc', 'keepXmp',
+]);
 
 /**
  * Build a proxied image URL from a Strapi image object.
  * Automatically includes focal point when set in the media library.
  * Appends `v` param from `updatedAt` for cache busting across all layers.
  *
- * @param {StrapiImage | null | undefined} image - Strapi image object
- * @param {ImageTransformOptions} [opts]  - Transform options
+ * @param {StrapiImage | null | undefined} image
+ * @param {ImageTransformOptions} [opts]
  * @returns {string}
  */
-export function imageUrl(image, { w, h, format, q, fit } = {}) {
+export function imageUrl(image, opts = {}) {
   if (!image?.url) return '';
 
   const base = strapiMedia(image.url);
   const params = new URLSearchParams();
 
-  if (w != null) params.set('w', String(w));
-  if (h != null) params.set('h', String(h));
-  if (format) params.set('f', format);
-  if (q != null) params.set('q', String(q));
-  if (fit) params.set('fit', fit);
+  params.set('f', opts.format ?? 'jpg');
+  params.set('q', String(opts.q ?? 70));
 
-  if (image.focalPoint) {
-    const fpx = image.focalPoint.x > 1 ? image.focalPoint.x / 100 : image.focalPoint.x;
-    const fpy = image.focalPoint.y > 1 ? image.focalPoint.y / 100 : image.focalPoint.y;
-    params.set('fpx', String(fpx));
-    params.set('fpy', String(fpy));
+  for (const key of PASSTHROUGH_PARAMS) {
+    if (key === 'q') continue;
+    const value = opts[key];
+    if (value == null || value === false) continue;
+    params.set(key, value === true ? 'true' : String(value));
   }
+
+  // Sent even on width-only URLs. Sharp crops with these only when both w and h
+  // are set, and then only as a 3×3 gravity. Responsive crops use object-position.
+  // On a width-only URL the params still change the cache key.
+  const fpx = opts.fpx ?? image.focalPoint?.x;
+  const fpy = opts.fpy ?? image.focalPoint?.y;
+  if (fpx != null) params.set('fpx', String(fpx > 1 ? fpx / 100 : fpx));
+  if (fpy != null) params.set('fpy', String(fpy > 1 ? fpy / 100 : fpy));
 
   if (image.updatedAt) {
     params.set('v', String(new Date(image.updatedAt).getTime()));
@@ -273,65 +349,293 @@ export function imageUrl(image, { w, h, format, q, fit } = {}) {
 }
 
 /**
- * Build a `srcset` string for responsive images.
+ * Build a width-descriptor `srcset` string.
  *
- * @param {StrapiImage | null | undefined} image - Strapi image object
- * @param {number[]} widths   - Array of widths, e.g. [400, 800, 1200]
- * @param {Omit<ImageTransformOptions, 'w'>} [opts] - Shared options (format, q, fit)
+ * @param {StrapiImage | null | undefined} image
+ * @param {number[]} widths
+ * @param {Omit<ImageTransformOptions, 'w'>} [opts]
  * @returns {string}
  */
 export function imageSrcset(image, widths, opts = {}) {
-  if (!image?.url) return '';
+  if (!image?.url || !widths?.length) return '';
   return widths
-    .map(w => `${imageUrl(image, { ...opts, w })} ${w}w`)
+    .map((w) => `${imageUrl(image, { ...opts, w })} ${w}w`)
     .join(', ');
+}
+
+/**
+ * Build a DPR-descriptor `srcset` for fixed-size images.
+ * Use when the image's CSS size is constant across breakpoints (avatars,
+ * decorative portraits, icons). The browser picks based on devicePixelRatio.
+ *
+ * @param {StrapiImage | null | undefined} image
+ * @param {number} w
+ * @param {number} [h]
+ * @param {number[]} [dpr]
+ * @param {Omit<ImageTransformOptions, 'w' | 'h'>} [opts]
+ * @returns {string}
+ */
+export function imageDprSrcset(image, w, h, dpr = [1, 2], opts = {}) {
+  if (!image?.url || !w) return '';
+  return dpr
+    .map((d) => `${imageUrl(image, { ...opts, w: w * d, h: h ? h * d : undefined })} ${d}x`)
+    .join(', ');
+}
+
+const DEFAULT_WIDTHS = [400, 800, 1200, 1920];
+const DEFAULT_DPR = [1, 2];
+const DEFAULT_FORMAT_CASCADE = /** @type {const} */ (['avif', 'webp']);
+
+/** @type {Record<string, string>} */
+const FORMAT_MIME = {
+  avif: 'image/avif',
+  webp: 'image/webp',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  tiff: 'image/tiff',
+  gif: 'image/gif',
+};
+
+/**
+ * Build a complete set of `<img>` props from a Strapi image object.
+ * Mode is auto-detected from `opts`:
+ *   - `widths` provided (or neither widths nor w) → width-descriptor srcset
+ *   - `w` (+ optional `h`) only → DPR srcset
+ *
+ * Lazy images get `sizes="auto"` by default (browser computes rendered size).
+ * Eager images must supply explicit `sizes` — `sizes="auto"` only works with `loading="lazy"`.
+ *
+ * @param {StrapiImage | null | undefined} image
+ * @param {ImageTransformOptions & {
+ *   widths?: number[],
+ *   dpr?: number[],
+ *   sizes?: string,
+ *   loading?: 'lazy' | 'eager',
+ *   decoding?: 'async' | 'sync' | 'auto',
+ *   fetchpriority?: 'high' | 'low' | 'auto',
+ *   alt?: string,
+ * }} [opts]
+ */
+export function imageProps(image, opts = {}) {
+  const {
+    widths, dpr = DEFAULT_DPR, sizes,
+    loading = 'lazy', decoding = 'async', fetchpriority,
+    alt, ...transform
+  } = opts;
+
+  if (!image?.url) {
+    return { src: '', alt: alt ?? '', loading, decoding };
+  }
+
+  /** @type {Record<string, any>} */
+  const props = { src: '', alt: alt ?? image.alternativeText ?? '', loading, decoding };
+  if (fetchpriority) props.fetchpriority = fetchpriority;
+
+  // Focal point as object-position. Needs object-fit: cover on the element.
+  // Sharp's fpx/fpy crop is a separate path and only runs when both w and h are set.
+  const objectPosition = focalPointToObjectPosition(image.focalPoint);
+  if (objectPosition) props.style = `object-position: ${objectPosition}`;
+
+  // Fixed-size DPR mode
+  if (!widths && transform.w != null) {
+    const w = transform.w;
+    const h = transform.h;
+    props.src = imageUrl(image, transform);
+    props.srcset = imageDprSrcset(image, w, h, dpr, transform);
+    props.width = w;
+    if (h != null) props.height = h;
+    return props;
+  }
+
+  // Responsive width-descriptor mode (default)
+  const widthList = widths ?? DEFAULT_WIDTHS;
+  const largest = widthList[widthList.length - 1];
+  props.src = imageUrl(image, { ...transform, w: largest });
+  props.srcset = imageSrcset(image, widthList, transform);
+  props.sizes = sizes ?? (loading === 'lazy' ? 'auto' : '100vw');
+  if (image.width && image.height) {
+    props.width = image.width;
+    props.height = image.height;
+  }
+  return props;
+}
+
+/**
+ * Convert a Strapi focalPoint to a CSS object-position value.
+ * Returns undefined when no focal point is set, so the browser default (center) applies.
+ * Accepts 0–1 fractions or 0–100 percentages.
+ *
+ * @param {{ x: number, y: number } | null | undefined} focalPoint
+ * @returns {string | undefined}
+ */
+export function focalPointToObjectPosition(focalPoint) {
+  if (!focalPoint) return undefined;
+  const x = focalPoint.x > 1 ? focalPoint.x : focalPoint.x * 100;
+  const y = focalPoint.y > 1 ? focalPoint.y : focalPoint.y * 100;
+  return `${Math.round(x)}% ${Math.round(y)}%`;
+}
+
+/**
+ * Build props for a <picture> element.
+ * sources: avif, then webp. img: jpg fallback from imageProps (includes object-position).
+ *
+ * Do not pass a single h into a responsive width list. For a fixed box, pass w and h
+ * and omit widths so each format uses a DPR srcset with both dimensions scaled.
+ *
+ * @param {StrapiImage | null | undefined} image
+ * @param {ImageTransformOptions & {
+ *   formats?: Array<'avif'|'webp'|'png'|'tiff'|'gif'>,
+ *   widths?: number[],
+ *   dpr?: number[],
+ *   sizes?: string,
+ *   loading?: 'lazy' | 'eager',
+ *   decoding?: 'async' | 'sync' | 'auto',
+ *   alt?: string,
+ * }} [opts]
+ */
+export function pictureProps(image, opts = {}) {
+  const {
+    formats = DEFAULT_FORMAT_CASCADE,
+    widths,
+    dpr = DEFAULT_DPR,
+    sizes,
+    loading = 'lazy',
+    decoding = 'async',
+    alt,
+    ...transform
+  } = opts;
+
+  const fallback = {
+    sources: [],
+    img: { src: '', alt: alt ?? '', loading, decoding },
+  };
+
+  if (!image?.url) return fallback;
+
+  const useDpr = !widths && transform.w != null;
+
+  const srcsetFor = (fmt) => {
+    if (useDpr) {
+      const w = /** @type {number} */ (transform.w);
+      const h = transform.h;
+      return imageDprSrcset(image, w, h, dpr, { ...transform, format: fmt });
+    }
+    const widthList = widths ?? DEFAULT_WIDTHS;
+    return imageSrcset(image, widthList, { ...transform, format: fmt });
+  };
+
+  const resolvedSizes = useDpr ? undefined : (sizes ?? (loading === 'lazy' ? 'auto' : '100vw'));
+
+  const sources = formats.map((fmt) => {
+    const entry = {
+      srcset: srcsetFor(fmt),
+      type: FORMAT_MIME[fmt] ?? `image/${fmt}`,
+    };
+    if (resolvedSizes) entry.sizes = resolvedSizes;
+    return entry;
+  });
+
+  const imgProps = imageProps(image, { ...opts, format: 'jpg' });
+  return { sources, img: imgProps };
 }
 ```
 
 > **Note:** `strapiMedia()` resolves relative `/uploads/...` paths to full URLs using your `PUBLIC_STRAPI_URL` env variable. If you don't have this helper, replace `strapiMedia(image.url)` with `image.url` for same-origin setups.
 
-> **Important:** Include `updatedAt` and `focalPoint` in your Strapi image field selections so that cache busting and focal-point cropping work. All fields except `url` are optional — the helper gracefully skips any that are missing:
+> **Strapi field selection:** include `updatedAt`, `focalPoint`, `width`, and `height` so cache busting, `object-position`, and CLS-preventing intrinsic dimensions all work. All fields except `url` are optional. The helper skips any that are missing:
 > ```js
-> image: { fields: ['url', 'alternativeText', 'updatedAt', 'focalPoint'] }
+> image: { fields: ['url', 'alternativeText', 'updatedAt', 'focalPoint', 'width', 'height'] }
 > ```
 
-### Usage: basic `<img>`
+### Usage: responsive `<picture>` (recommended)
+
+For content images, use the format cascade. Below the fold, `loading="lazy"` and `sizes="auto"` let the browser measure the rendered size and pick a candidate. That is the [pattern Mat Marquis describes](https://piccalil.li/blog/the-end-of-responsive-images/) now that Gecko and WebKit ship `sizes="auto"`.
+
+Keep `object-cover` on the `<img>`. The helper's `style` is the focal-point `object-position`. Do not pass `h` here.
 
 ```svelte
 <script>
-  import { imageUrl } from '$lib/image';
-
-  /** @type {{ image: Object }} */
+  import { pictureProps } from '$lib/image';
   let { image } = $props();
+  const pic = $derived(pictureProps(image));
 </script>
 
-<img
-  src={imageUrl(image, { w: 800, h: 600 })}
-  alt={image.alternativeText || ''}
-  class="w-full h-full object-cover"
-/>
+<picture>
+  {#each pic.sources as source}
+    <source srcset={source.srcset} type={source.type} sizes={source.sizes} />
+  {/each}
+  <img {...pic.img} class="h-full w-full object-cover" />
+</picture>
 ```
 
-### Usage: responsive `srcset`
+That yields:
+
+- avif and webp `srcset`s at `400w / 800w / 1200w / 1920w` (override with `widths`)
+- a jpg `srcset` on the `<img>`, quality 70
+- `sizes="auto"` on lazy images
+- `width` / `height` from the Strapi file, for layout
+- `object-position` when `focalPoint` is set
+
+### Usage: responsive `<img>`
+
+Same layout contract, one format (jpg at quality 70 unless you pass `format` or `q`):
 
 ```svelte
 <script>
-  import { imageUrl, imageSrcset } from '$lib/image';
-
-  /** @type {{ image: Object }} */
+  import { imageProps } from '$lib/image';
   let { image } = $props();
 </script>
 
-<img
-  src={imageUrl(image, { w: 800 })}
-  srcset={imageSrcset(image, [400, 800, 1200, 1920])}
-  sizes="(max-width: 640px) 400px, (max-width: 1024px) 800px, (max-width: 1536px) 1200px, 1920px"
-  alt={image.alternativeText || ''}
-  class="w-full h-full object-cover"
-/>
+<img {...imageProps(image)} class="h-full w-full object-cover" />
 ```
 
-### Usage: background image
+### Usage: above-the-fold / LCP
+
+Eager images are requested before layout, so the browser cannot compute `sizes="auto"`. Pass an explicit `sizes` and, for the LCP image, `fetchpriority="high"`. Still omit `h`.
+
+```svelte
+<script>
+  import { pictureProps } from '$lib/image';
+  let { image } = $props();
+  const pic = $derived(pictureProps(image, {
+    widths: [600, 1220, 1920],
+    loading: 'eager',
+    fetchpriority: 'high',
+    sizes: '(min-width: 1024px) 1220px, 100vw',
+  }));
+</script>
+
+<picture>
+  {#each pic.sources as source}
+    <source srcset={source.srcset} type={source.type} sizes={source.sizes} />
+  {/each}
+  <img {...pic.img} class="h-full w-full object-cover" />
+</picture>
+```
+
+### Usage: fixed-size image (DPR srcset)
+
+For a constant CSS size (avatars, portraits, icons), pass `w` and `h` and omit `widths`. Each format gets a DPR srcset (`1x` / `2x` / ...), and Sharp crops with the 3×3 focal gravity because both dimensions are on the URL. Omit `h` only when you do not want that server crop.
+
+```svelte
+<script>
+  import { pictureProps } from '$lib/image';
+  let { image } = $props();
+  const pic = $derived(pictureProps(image, { w: 336, h: 432, dpr: [1, 2, 3] }));
+</script>
+
+<picture>
+  {#each pic.sources as source}
+    <source srcset={source.srcset} type={source.type} />
+  {/each}
+  <img {...pic.img} class="rounded-sm object-cover" />
+</picture>
+```
+
+### Usage: just the URL
+
+For background images, `<picture>` source elements, or any custom markup:
 
 ```svelte
 <div
@@ -339,6 +643,8 @@ export function imageSrcset(image, widths, opts = {}) {
   class="bg-cover bg-center h-screen"
 />
 ```
+
+`imageUrl` accepts every plugin-whitelisted param — see the [Supported Parameters](#supported-parameters) section above for the full list (blur, grayscale, tint, withoutEnlargement, keepExif, etc.).
 
 ---
 

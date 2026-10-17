@@ -94,6 +94,14 @@ async function runPipeline(source, params, strapi) {
     autoOrient: true,
   });
 
+  /*
+   * Focal point only crops when both w and h are present. With one
+   * dimension, Sharp derives the other from the source aspect ratio and
+   * `position` does nothing. Even with both, fpx/fpy snap to a 3×3 gravity
+   * (thresholds 0.33 and 0.67), not an exact focal pixel. Width-descriptor
+   * srcsets must not share one h across every width. Responsive callers
+   * should crop with CSS object-position instead. See the README.
+   */
   //+ Resize + focal point
   if (w || h) {
     const fit = VALID_FITS.has(params.fit) ? params.fit : 'cover';
