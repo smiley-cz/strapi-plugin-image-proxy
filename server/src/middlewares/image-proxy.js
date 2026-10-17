@@ -127,6 +127,8 @@ module.exports = ({ strapi }) => ({
           outputFormat,
         }
       );
+      //+ nginx must not cache the unprocessed original served at this processed URL
+      ctx.set('X-Accel-Expires', '0');
       return next(); // always fall through — never break image delivery
     }
   },

@@ -76,7 +76,7 @@ module.exports = {
     enabled: true,
     resolve: './src/plugins/image-proxy',
     config: {
-      cacheDir: '/var/cache/strapi-image-proxy',
+      // cacheDir: '/var/cache/strapi-image-proxy', // default: <project>/.cache/image-proxy (see cacheDir note)
       ttl: 60 * 60 * 24 * 30,            // 30 days; set to 0 to never expire
       defaultFormat: 'webp',
       defaultQuality: 85,                 // 1–100
@@ -111,6 +111,19 @@ module.exports = {
 | `fileLookupTtl` | number | `30` | Seconds to cache `plugin::upload.file` lookups in memory. Lifecycle hooks invalidate on update/delete; this is just a TTL safety net. Set `0` to disable |
 | `fileLookupMax` | integer | `1000` | Max entries in the in-memory lookup cache (LRU eviction) |
 | `tmpFileMaxAge` | number | `3600` | Seconds. On bootstrap, orphan `.tmp` files in `cacheDir` older than this are removed. Set `0` to disable the sweep |
+
+### cacheDir and permissions
+
+The default `<project>/.cache/image-proxy` needs no setup and no root. The plugin creates it on startup, as the user that runs Strapi.
+
+A directory outside the project has to exist before the first start, owned by that user. `/var/cache` belongs to root, so the plugin cannot create a folder there itself, and Strapi stops with `EACCES`:
+
+```bash
+sudo mkdir -p /var/cache/strapi-image-proxy
+sudo chown <strapi-user>:<strapi-user> /var/cache/strapi-image-proxy
+```
+
+Do not point `cacheDir` at nginx's cache directory. A full flush deletes `cacheDir` and recreates it, and nginx does not serve the plugin's files from there anyway.
 
 ---
 
@@ -714,35 +727,65 @@ If your provider serves uploads from a path other than `/uploads/` (e.g. `/media
 ```
 Browser cache (1 year, immutable)
   ↓ miss
-nginx proxy_cache (optional, 30 days)
+nginx proxy_cache (optional, dropped after 30 days without requests)
   ↓ miss
 Plugin disk cache (30 day TTL)
   ↓ miss
 Sharp processing → cached to disk → response flows back up
 ```
 
+Only processed images get the 1-year header. Originals requested without parameters are served by Strapi's static handler with its own `Cache-Control` (`max-age=0` by default), and the nginx config below does not cache them.
+
 ### nginx proxy_cache (optional, recommended)
 
-By default, even cache HITs go through Node.js. Adding `proxy_cache` lets nginx serve cached images directly without touching Strapi:
+By default, even cache HITs go through Node.js. Adding `proxy_cache` lets nginx serve cached images directly without touching Strapi.
+
+nginx needs two pieces in two places. `proxy_cache_path` is only allowed in the `http {}` block, and nginx rejects it inside `server {}`. The `location` goes into your Strapi `server {}` block:
 
 ```nginx
-proxy_cache_path /var/cache/nginx/image-proxy levels=1:2
-                 keys_zone=images:10m max_size=2g inactive=30d;
+# 1) Inside http {}, once per server.
+#    On Debian/Ubuntu, a file under /etc/nginx/conf.d/ is read there.
+proxy_cache_path /var/cache/nginx-image-proxy levels=1:2
+                 keys_zone=image_proxy:10m max_size=2g inactive=30d;
 
-location /uploads/ {
-    proxy_cache images;
-    proxy_cache_key "$uri$is_args$args";
-    proxy_cache_valid 200 30d;
-    proxy_cache_valid 304 30d;
-    proxy_cache_use_stale error timeout updating;
-
-    proxy_pass http://127.0.0.1:1337;
+# 2) Inside your Strapi server {} block.
+location ^~ /uploads/ {
+    proxy_pass http://127.0.0.1:1337;   # your Strapi port
     proxy_set_header Host $host;
 
-    proxy_pass_header ETag;
-    proxy_pass_header Cache-Control;
+    proxy_cache image_proxy;
+    proxy_cache_key "$host$uri$is_args$args";
+    proxy_cache_valid 200 30d;
+    proxy_cache_use_stale error timeout updating;
+    proxy_cache_lock on;
+
+    add_header X-Image-Cache $upstream_cache_status always;
 }
 ```
+
+What each part does:
+
+- `/var/cache/nginx-image-proxy` sits directly under `/var/cache`, which always exists. nginx creates only the last folder of a cache path, and hands it to its worker user. A path such as `/var/cache/nginx/image-proxy` fails to start when `/var/cache/nginx` is missing.
+- `^~` makes this location win over regex locations, such as `location ~* \.(jpe?g|png|webp)$`. A plain `location /uploads/` loses to them, and nothing gets cached.
+- nginx keeps the plugin's `Cache-Control: public, max-age=31536000, immutable`, so a processed image stays in nginx while it keeps being requested. `inactive=30d` drops it after 30 days without requests, and `max_size` caps the disk use.
+- Strapi sends `max-age=0` for originals, so nginx passes them through uncached. Error responses are not cached either. If Sharp fails, the plugin falls through to the original and sends `X-Accel-Expires: 0`, so that response is not cached.
+- `$host` in the key keeps several sites apart when they share one zone.
+- `proxy_cache_lock` lets one request for a new variant run Sharp while other requests for that URL wait for its result.
+- `X-Image-Cache` shows `MISS`, `HIT`, or `EXPIRED` on each response.
+
+Notes:
+
+- nginx does not inherit `add_header` or `proxy_set_header` into a `location` that sets its own. If your `server {}` block sets security headers or `X-Forwarded-*` headers, repeat them inside this location.
+- If you change `urlPrefix`, change the location to match.
+- Use a zone name and a directory that no other `proxy_cache_path` uses. nginx refuses to start when two zones share a name or a path. If the server already caches media in another zone, use that zone instead of adding this block.
+
+Check it with a URL that has not been requested yet:
+
+```bash
+curl -sI "https://your-strapi-host/uploads/<file>.jpg?w=320&v=check1" | grep -iE "cache-control|x-image-cache"
+```
+
+The first request shows `X-Image-Cache: MISS`, the second `HIT`. Both show `max-age=31536000`.
 
 No purging needed — the `v` param in image URLs changes when a file is updated in Strapi, which produces a new URL and automatically misses all caches.
 
