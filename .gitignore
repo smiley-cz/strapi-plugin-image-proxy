@@ -1,7 +1,7 @@
 node_modules/
-.cache/
 sync-to-strapi.sh
 AGENTS.md
+.cache/
 .cursor/
 .claude/
 *.log
