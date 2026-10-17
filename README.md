@@ -285,28 +285,34 @@ import { strapiMedia } from '$lib/api/strapi';
  * Mirrors VALID_PARAMS in `server/src/constants.js` — see "Supported Parameters" above for the full list.
  *
  * @typedef {Object} ImageTransformOptions
- * @property {number}  [w]
- * @property {number}  [h]
+ * // resize
+ * @property {number}  [w]                  - Output width in pixels
+ * @property {number}  [h]                  - Output height in pixels
  * @property {'cover'|'contain'|'fill'|'inside'|'outside'} [fit]
- * @property {number}  [fpx]
- * @property {number}  [fpy]
- * @property {boolean} [withoutEnlargement]
+ * @property {number}  [fpx]                - Focal point X (0–1); auto-filled from image.focalPoint when present
+ * @property {number}  [fpy]                - Focal point Y (0–1); auto-filled from image.focalPoint when present
+ * @property {boolean} [withoutEnlargement] - Plugin default is true; pass false to allow upscaling
+ * // format
  * @property {'webp'|'avif'|'jpg'|'jpeg'|'png'|'tiff'|'gif'} [format]
- * @property {number}  [q]
- * @property {boolean} [lossless]
- * @property {number}  [effort]
- * @property {number}  [compressionLevel]
+ * @property {number}  [q]                  - Quality 1–100
+ * @property {boolean} [lossless]           - webp only
+ * @property {number}  [effort]             - 0–6 (webp/avif)
+ * @property {number}  [compressionLevel]   - 0–9 (png only)
+ * // color & tone
  * @property {boolean} [grayscale]
  * @property {boolean} [negate]
  * @property {boolean} [normalize]
- * @property {string}  [tint]
- * @property {number}  [gamma]
- * @property {number}  [blur]
+ * @property {string}  [tint]               - Hex color, e.g. '#ff0000'
+ * @property {number}  [gamma]              - 1.0–3.0
+ * // blur & sharpen
+ * @property {number}  [blur]               - 0.3–1000
  * @property {boolean} [sharpen]
- * @property {number}  [median]
+ * @property {number}  [median]             - 3–99 (odd)
+ * // orientation
  * @property {boolean} [flip]
  * @property {boolean} [flop]
- * @property {number}  [rotate]
+ * @property {number}  [rotate]             - -360–360
+ * // metadata retention (opt-in; default is to strip everything)
  * @property {boolean} [keepMetadata]
  * @property {boolean} [keepExif]
  * @property {boolean} [keepIcc]
@@ -413,24 +419,32 @@ const FORMAT_MIME = {
 };
 
 /**
- * Build a complete set of `<img>` props from a Strapi image object.
- * Mode is auto-detected from `opts`:
- *   - `widths` provided (or neither widths nor w) → width-descriptor srcset
- *   - `w` (+ optional `h`) only → DPR srcset
+ * @typedef {Object} ImagePropsOptions
+ * Mode is auto-detected:
+ *   - `widths` provided → width-descriptor srcset (responsive)
+ *   - `w` + `h` (no `widths`) → DPR srcset (fixed-size)
+ *   - just `w` → single-source <img>
  *
- * Lazy images get `sizes="auto"` by default (browser computes rendered size).
- * Eager images must supply explicit `sizes` — `sizes="auto"` only works with `loading="lazy"`.
+ * @property {number[]}  [widths]        - Width candidates; defaults to [400, 800, 1200, 1920] when neither widths nor w are provided
+ * @property {number[]}  [dpr]           - DPR descriptors for fixed-size mode; default [1, 2]
+ * @property {string}    [sizes]         - Required for eager images; ignored for DPR mode. Lazy images default to 'auto'
+ * @property {'lazy'|'eager'} [loading]  - Default 'lazy'
+ * @property {'async'|'sync'|'auto'} [decoding] - Default 'async'
+ * @property {'high'|'low'|'auto'} [fetchpriority]
+ * @property {string}    [alt]           - Overrides image.alternativeText
+ * // plus all ImageTransformOptions (w, h, format, q, fit, blur, …)
+ */
+
+/**
+ * Build a complete set of `<img>` props from a Strapi image object.
+ * Spread the result onto an `<img>` element.
+ *
+ * Defaults align with https://piccalil.li/blog/the-end-of-responsive-images/ —
+ * lazy images get `sizes="auto"` so the browser picks the best candidate based
+ * on actual rendered size. Eager images must supply explicit `sizes`.
  *
  * @param {StrapiImage | null | undefined} image
- * @param {ImageTransformOptions & {
- *   widths?: number[],
- *   dpr?: number[],
- *   sizes?: string,
- *   loading?: 'lazy' | 'eager',
- *   decoding?: 'async' | 'sync' | 'auto',
- *   fetchpriority?: 'high' | 'low' | 'auto',
- *   alt?: string,
- * }} [opts]
+ * @param {ImagePropsOptions & ImageTransformOptions} [opts]
  */
 export function imageProps(image, opts = {}) {
   const {
@@ -443,7 +457,7 @@ export function imageProps(image, opts = {}) {
     return { src: '', alt: alt ?? '', loading, decoding };
   }
 
-  /** @type {Record<string, any>} */
+  /** @type {{ src: string, srcset?: string, sizes?: string, width?: number, height?: number, alt: string, loading: 'lazy' | 'eager', decoding: 'async' | 'sync' | 'auto', fetchpriority?: 'high' | 'low' | 'auto', style?: string }} */
   const props = { src: '', alt: alt ?? image.alternativeText ?? '', loading, decoding };
   if (fetchpriority) props.fetchpriority = fetchpriority;
 
@@ -466,6 +480,15 @@ export function imageProps(image, opts = {}) {
   // Responsive width-descriptor mode (default)
   const widthList = widths ?? DEFAULT_WIDTHS;
   const largest = widthList[widthList.length - 1];
+
+  if (loading === 'eager' && !sizes && import.meta.env?.DEV) {
+    console.warn(
+      '[imageProps] eager image without explicit `sizes` — falling back to "100vw". ' +
+        '`sizes="auto"` only works with loading="lazy".',
+      image.url
+    );
+  }
+
   props.src = imageUrl(image, { ...transform, w: largest });
   props.srcset = imageSrcset(image, widthList, transform);
   props.sizes = sizes ?? (loading === 'lazy' ? 'auto' : '100vw');
@@ -475,6 +498,35 @@ export function imageProps(image, opts = {}) {
   }
   return props;
 }
+
+/**
+ * @typedef {Object} PictureSource
+ * @property {string} srcset
+ * @property {string} type    - MIME type, e.g. "image/avif"
+ * @property {string} [sizes]
+ */
+
+/**
+ * @typedef {Object} PictureProps
+ * @property {PictureSource[]} sources - One `<source>` per format in the cascade
+ * @property {{ src: string, srcset?: string, sizes?: string, width?: number, height?: number, alt: string, loading: 'lazy'|'eager', decoding: 'async'|'sync'|'auto', fetchpriority?: 'high'|'low'|'auto', style?: string }} img - Fallback `<img>` props (jpg); `style` carries focal-point `object-position` when set
+ */
+
+/*
+ * Focal-point cropping for responsive images is handled client-side via CSS
+ * `object-position` (see `focalPointToObjectPosition`), which `imageProps` bakes into
+ * the returned `img.style` so a plain `{...img}` spread applies it automatically.
+ *
+ * The `fpx`/`fpy` URL params ARE still appended to proxy URLs for Sharp, but Sharp's
+ * focal-point crop only activates when both `w` and `h` are present. In responsive
+ * width-descriptor srcsets, `imageSrcset` passes a single `h` from opts to every entry,
+ * meaning 400×h, 800×h, 1200×h would all get different aspect ratios — breaking layout.
+ *
+ * A future refactor could add an `aspectRatio` option to `imageSrcset`/`pictureProps`
+ * that computes a proportional `h` per width candidate (e.g. h = w * 9/16). This would
+ * let Sharp pre-crop around the focal point server-side, reducing transferred image data.
+ * Until then, CSS object-position handles the visual crop correctly at all viewport sizes.
+ */
 
 /**
  * Convert a Strapi focalPoint to a CSS object-position value.
@@ -499,15 +551,8 @@ export function focalPointToObjectPosition(focalPoint) {
  * and omit widths so each format uses a DPR srcset with both dimensions scaled.
  *
  * @param {StrapiImage | null | undefined} image
- * @param {ImageTransformOptions & {
- *   formats?: Array<'avif'|'webp'|'png'|'tiff'|'gif'>,
- *   widths?: number[],
- *   dpr?: number[],
- *   sizes?: string,
- *   loading?: 'lazy' | 'eager',
- *   decoding?: 'async' | 'sync' | 'auto',
- *   alt?: string,
- * }} [opts]
+ * @param {ImagePropsOptions & ImageTransformOptions & { formats?: Array<'avif'|'webp'|'png'|'tiff'|'gif'> }} [opts]
+ * @returns {PictureProps}
  */
 export function pictureProps(image, opts = {}) {
   const {
