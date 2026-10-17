@@ -1,6 +1,6 @@
 {
   "name": "strapi-plugin-image-proxy",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "On-demand image processing and caching plugin for Strapi V5 using Sharp",
   "repository": {
     "type": "git",
