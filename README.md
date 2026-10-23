@@ -9,7 +9,7 @@ Intercepts requests to `/uploads/` URLs that contain valid transformation parame
 ## Features
 
 - On-demand resize, crop, format conversion, blur, sharpen, rotate, flip, grayscale, and more
-- Focal point support via `fpx`/`fpy`. Sharp snaps these to a 3×3 gravity and only crops when **both** `w` and `h` are set. Responsive width-only srcsets do not crop; the SvelteKit helper applies the real focal point with CSS `object-position`
+- Focal point support via `fpx`/`fpy`. On `cover` with both `w` and `h`, the fraction is used as given (including fine decimals, or a 0–100 percentage). Responsive width-only srcsets do not crop; the SvelteKit helper applies the same fraction with CSS `object-position`
 - Automatic EXIF orientation fix (`autoOrient`) — mobile photos display correctly without explicit `?rotate=`
 - Disk cache with configurable TTL and ETag/304 support
 - Automatically uses Strapi-generated thumbnail formats as source where possible (avoids processing large originals at request time)
@@ -172,8 +172,8 @@ All numeric parameters are validated and clamped to their allowed range. Invalid
 | `w` | number | 1–`maxOutputWidth` | Output width in pixels. Values outside this range return `400` |
 | `h` | number | 1–`maxOutputHeight` | Output height in pixels. Values outside this range return `400` |
 | `fit` | string | `cover`, `contain`, `fill`, `inside`, `outside` | Sharp fit mode (default: `cover`) |
-| `fpx` | number | 0–1 | Focal point X (default: `0.5`). See [Focal point](#focal-point) |
-| `fpy` | number | 0–1 | Focal point Y (default: `0.5`). See [Focal point](#focal-point) |
+| `fpx` | number | 0–1 or 0–100 | Focal point X (default: `0.5`). Values above 1 are percentages. See [Focal point](#focal-point) |
+| `fpy` | number | 0–1 or 0–100 | Focal point Y (default: `0.5`). Values above 1 are percentages. See [Focal point](#focal-point) |
 | `withoutEnlargement` | boolean | | Never upscale beyond original dimensions (default: `true`). Set `withoutEnlargement=false` to allow upscaling |
 
 ### Format
@@ -245,22 +245,22 @@ Drop-in utilities for building proxied image URLs, `<img>` props, and a `<pictur
 
 ### Focal point
 
-`fpx` and `fpy` do not crop to the exact focal pixel.
+`fpx` and `fpy` take the full fraction. `0.412` and `0.418` are different crops once that gap is at least one source pixel. The crop window is an integer rectangle, so the only rounding is the pixel edge. Values above 1 are read as percentages (`41.25` and `0.4125` are the same point). `1` stays the far edge of the 0–1 scale.
 
-Sharp runs the focal point only inside `resize`, and only the `position` gravity. The plugin buckets each axis into thirds: `<= 0.33` is left or top, `>= 0.67` is right or bottom, and the middle third is centre. A focal point of `0.40, 0.40` is still `centre`.
+The exact window runs when `fit` is `cover` (the default) and **both** `w` and `h` are present. It keeps the target aspect ratio, sits as close to the focal point as the frame allows, then scales to `w`×`h`. `contain`, `fill`, `inside`, and `outside` still use Sharp's 3×3 gravity (`<= 0.33` left or top, `>= 0.67` right or bottom).
 
-That gravity runs only when **both** `w` and `h` are present. A width-only URL keeps the source aspect ratio, so `position` changes nothing. The params are still part of the cache key, so sending them on a width-only URL stores a duplicate variant.
+A width-only URL keeps the source aspect ratio, so there is no window to slide. The params are still part of the cache key, so sending them on a width-only URL stores a duplicate variant.
 
 Do not pass one `h` through a width-descriptor srcset. `imageSrcset(image, [400, 800, 1200], { h: 600 })` requests 400×600, 800×600, and 1200×600. Those are three aspect ratios, and the layout breaks.
 
 Use the mode the helper already picks:
 
-- **Responsive** (`widths`, or neither `widths` nor `w`). Omit `h`. `imageProps` and `pictureProps` set `style="object-position: X% Y%"` from `image.focalPoint`, using the real percentage rather than the 3×3 snap. The element needs `object-fit: cover` (`object-cover` in Tailwind) or that position does nothing. A later `style` attribute on the `<img>` replaces the one from the helper.
-- **Fixed box** (`w` and `h`, no `widths`). Sharp crops with the 3×3 gravity. `imageDprSrcset` scales both sides per DPR (`w * d`, `h * d`), so 1x and 2x keep the same aspect ratio.
+- **Responsive** (`widths`, or neither `widths` nor `w`). Omit `h`. `imageProps` and `pictureProps` set `style="object-position: X% Y%"` from `image.focalPoint`, keeping fractional percents such as `41.25%`. The element needs `object-fit: cover` (`object-cover` in Tailwind) or that position does nothing. A later `style` attribute on the `<img>` replaces the one from the helper.
+- **Fixed box** (`w` and `h`, no `widths`). Sharp crops to the focal point. `imageDprSrcset` scales both sides per DPR (`w * d`, `h * d`), so 1x and 2x keep the same aspect ratio.
 
 Strapi may store `focalPoint` as 0–1 or as 0–100. The helper normalizes both.
 
-Server-side crop of the exact focal pixel, with a proportional `h` per srcset width, is not implemented. Until it is, responsive images should keep using `object-position`.
+A proportional `h` per srcset width is not implemented. Responsive images should keep using `object-position`.
 
 ### Format
 
@@ -357,9 +357,9 @@ export function imageUrl(image, opts = {}) {
     params.set(key, value === true ? 'true' : String(value));
   }
 
-  // Sent even on width-only URLs. Sharp crops with these only when both w and h
-  // are set, and then only as a 3×3 gravity. Responsive crops use object-position.
-  // On a width-only URL the params still change the cache key.
+  // Sent even on width-only URLs. Sharp crops with these when fit is cover and
+  // both w and h are set, using the full fraction. On a width-only URL the
+  // params still change the cache key. Responsive crops use object-position.
   const fpx = opts.fpx ?? image.focalPoint?.x;
   const fpy = opts.fpy ?? image.focalPoint?.y;
   if (fpx != null) params.set('fpx', String(fpx > 1 ? fpx / 100 : fpx));
@@ -522,7 +522,8 @@ export function imageProps(image, opts = {}) {
  * the returned `img.style` so a plain `{...img}` spread applies it automatically.
  *
  * The `fpx`/`fpy` URL params ARE still appended to proxy URLs for Sharp, but Sharp's
- * focal-point crop only activates when both `w` and `h` are present. In responsive
+ * focal-point crop only activates when both `w` and `h` are present, and then uses
+ * the full fraction. In responsive
  * width-descriptor srcsets, `imageSrcset` passes a single `h` from opts to every entry,
  * meaning 400×h, 800×h, 1200×h would all get different aspect ratios — breaking layout.
  *
@@ -531,6 +532,18 @@ export function imageProps(image, opts = {}) {
  * let Sharp pre-crop around the focal point server-side, reducing transferred image data.
  * Until then, CSS object-position handles the visual crop correctly at all viewport sizes.
  */
+
+/**
+ * Percent for object-position. Keeps fractional percents (6 decimal places)
+ * so 41.25 stays 41.25, and trims binary float tails.
+ *
+ * @param {number} value
+ * @returns {string}
+ */
+function formatFocalPercent(value) {
+  const n = Math.round(value * 1e6) / 1e6;
+  return String(n);
+}
 
 /**
  * Convert a Strapi focalPoint to a CSS object-position value.
@@ -544,7 +557,7 @@ export function focalPointToObjectPosition(focalPoint) {
   if (!focalPoint) return undefined;
   const x = focalPoint.x > 1 ? focalPoint.x : focalPoint.x * 100;
   const y = focalPoint.y > 1 ? focalPoint.y : focalPoint.y * 100;
-  return `${Math.round(x)}% ${Math.round(y)}%`;
+  return `${formatFocalPercent(x)}% ${formatFocalPercent(y)}%`;
 }
 
 /**
@@ -680,7 +693,7 @@ Eager images are requested before layout, so the browser cannot compute `sizes="
 
 ### Usage: fixed-size image (DPR srcset)
 
-For a constant CSS size (avatars, portraits, icons), pass `w` and `h` and omit `widths`. Each format gets a DPR srcset (`1x` / `2x` / ...), and Sharp crops with the 3×3 focal gravity because both dimensions are on the URL. Omit `h` only when you do not want that server crop.
+For a constant CSS size (avatars, portraits, icons), pass `w` and `h` and omit `widths`. Each format gets a DPR srcset (`1x` / `2x` / ...), and Sharp crops to the focal point because both dimensions are on the URL. Omit `h` only when you do not want that server crop.
 
 ```svelte
 <script>

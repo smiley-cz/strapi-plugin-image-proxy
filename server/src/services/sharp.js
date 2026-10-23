@@ -23,6 +23,69 @@ function float(val, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
+//% ============================================
+//% Focal point
+//% ============================================
+
+/*
+ * 0–1 fractions stay as they are. Values above 1 are percentages
+ * (Strapi sometimes stores 41.25 rather than 0.4125). 1 itself stays
+ * the right/bottom edge of the 0–1 scale.
+ */
+function focalFraction(val) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return null;
+  const fraction = n > 1 ? n / 100 : n;
+  return Math.max(0, Math.min(1, fraction));
+}
+
+/*
+ * metadata() reports stored pixels. autoOrient has already turned the
+ * pipeline into display space, so orientations 5–8 need their axes swapped
+ * before the crop window is measured.
+ */
+function orientedDimensions(meta) {
+  const width = meta?.width || 0;
+  const height = meta?.height || 0;
+  const orientation = meta?.orientation || 0;
+  if (orientation >= 5 && orientation <= 8) {
+    return { width: height, height: width };
+  }
+  return { width, height };
+}
+
+/*
+ * Cover window in source pixels, centred on the focal point and clamped
+ * to the frame. fpx/fpy are used at full float precision. Only the pixel
+ * edges are rounded. Null means the window is the whole frame.
+ */
+function focalCoverRegion(srcW, srcH, destW, destH, fpx, fpy) {
+  if (!srcW || !srcH || !destW || !destH) return null;
+  if (fpx == null || fpy == null) return null;
+
+  const destAspect = destW / destH;
+  let cropW;
+  let cropH;
+  if (srcW / srcH > destAspect) {
+    cropH = srcH;
+    cropW = srcH * destAspect;
+  } else {
+    cropW = srcW;
+    cropH = srcW / destAspect;
+  }
+
+  const width = Math.max(1, Math.min(srcW, Math.round(cropW)));
+  const height = Math.max(1, Math.min(srcH, Math.round(cropH)));
+  if (width === srcW && height === srcH) return null;
+
+  let left = Math.round(fpx * srcW - width / 2);
+  let top = Math.round(fpy * srcH - height / 2);
+  left = Math.max(0, Math.min(left, srcW - width));
+  top = Math.max(0, Math.min(top, srcH - height));
+
+  return { left, top, width, height };
+}
+
 module.exports = ({ strapi }) => {
   const config = strapi.config.get('plugin::image-proxy');
 
@@ -97,26 +160,54 @@ async function runPipeline(source, params, strapi) {
   /*
    * Focal point only crops when both w and h are present. With one
    * dimension, Sharp derives the other from the source aspect ratio and
-   * `position` does nothing. Even with both, fpx/fpy snap to a 3×3 gravity
-   * (thresholds 0.33 and 0.67), not an exact focal pixel. Width-descriptor
-   * srcsets must not share one h across every width. Responsive callers
-   * should crop with CSS object-position instead. See the README.
+   * there is no window to slide. Width-descriptor srcsets must not share
+   * one h across every width. Responsive callers should crop with CSS
+   * object-position instead. See the README.
+   *
+   * cover uses the fraction as given (0.412 and 0.418 are different once
+   * that gap is at least a pixel). The window is extracted, then scaled.
+   * Other fits still map the point onto Sharp's 3×3 position gravity
+   * (thresholds 0.33 and 0.67), because those modes do not crop to a
+   * focal pixel.
    */
   //+ Resize + focal point
   if (w || h) {
     const fit = VALID_FITS.has(params.fit) ? params.fit : 'cover';
-    const fpx = float(params.fpx, 0, 1) ?? 0.5;
-    const fpy = float(params.fpy, 0, 1) ?? 0.5;
+    const fpx = focalFraction(params.fpx) ?? 0.5;
+    const fpy = focalFraction(params.fpy) ?? 0.5;
+    const withoutEnlargement = params.withoutEnlargement !== 'false';
+    const focalRequested = (params.fpx != null && params.fpx !== '')
+      || (params.fpy != null && params.fpy !== '');
 
-    const col = fpx <= 0.33 ? 'left' : fpx >= 0.67 ? 'right' : '';
-    const row = fpy <= 0.33 ? 'top' : fpy >= 0.67 ? 'bottom' : '';
-    const position = col || row ? [col, row].filter(Boolean).join(' ') : 'centre';
+    //+ Exact cover crop from the full fpx/fpy fraction
+    if (fit === 'cover' && w && h && focalRequested) {
+      const meta = await sharp(source, {
+        limitInputPixels: config.maxInputPixels,
+        failOn: 'error',
+      }).metadata();
+      const { width: srcW, height: srcH } = orientedDimensions(meta);
+      const region = focalCoverRegion(srcW, srcH, w, h, fpx, fpy);
+      if (region) {
+        pipeline = pipeline.extract(region);
+        /*
+         * fill scales the extracted window to w×h. A follow-up cover crop
+         * would shave a rounded edge and slide the focal pixel.
+         */
+        pipeline = pipeline.resize(w, h, { fit: 'fill', withoutEnlargement });
+      } else {
+        pipeline = pipeline.resize(w, h, { fit: 'cover', withoutEnlargement });
+      }
+    } else {
+      const col = fpx <= 0.33 ? 'left' : fpx >= 0.67 ? 'right' : '';
+      const row = fpy <= 0.33 ? 'top' : fpy >= 0.67 ? 'bottom' : '';
+      const position = col || row ? [col, row].filter(Boolean).join(' ') : 'centre';
 
-    pipeline = pipeline.resize(w, h, {
-      fit,
-      position,
-      withoutEnlargement: params.withoutEnlargement !== 'false',
-    });
+      pipeline = pipeline.resize(w, h, {
+        fit,
+        position,
+        withoutEnlargement,
+      });
+    }
   }
 
   //+ Color & tone
