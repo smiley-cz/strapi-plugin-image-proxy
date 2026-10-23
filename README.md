@@ -247,7 +247,7 @@ Drop-in utilities for building proxied image URLs, `<img>` props, and a `<pictur
 
 `fpx` and `fpy` take the full fraction. `0.412` and `0.418` are different crops once that gap is at least one source pixel. The crop window is an integer rectangle, so the only rounding is the pixel edge. Values above 1 are read as percentages (`41.25` and `0.4125` are the same point). `1` stays the far edge of the 0–1 scale.
 
-The exact window runs when `fit` is `cover` (the default) and **both** `w` and `h` are present. It keeps the target aspect ratio, sits as close to the focal point as the frame allows, then scales to `w`×`h`. `contain`, `fill`, `inside`, and `outside` still use Sharp's 3×3 gravity (`<= 0.33` left or top, `>= 0.67` right or bottom).
+The exact window runs when `fit` is `cover` (the default) and **both** `w` and `h` are present. It keeps the target aspect ratio and slides like CSS `object-position`: `0` keeps the start edge, `1` keeps the far edge, and `0.4` sits 40% of the way between those crops. Then it scales to `w`×`h`. `contain`, `fill`, `inside`, and `outside` still use Sharp's 3×3 gravity (`<= 0.33` left or top, `>= 0.67` right or bottom).
 
 A width-only URL keeps the source aspect ratio, so there is no window to slide. The params are still part of the cache key, so sending them on a width-only URL stores a duplicate variant.
 

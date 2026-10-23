@@ -26,8 +26,14 @@ module.exports = ({ strapi }) => {
       for (const k of Object.keys(params).sort()) {
         if (VALID_PARAMS.has(k)) sorted[k] = params[k];
       }
+      /*
+       * fp2: cover crops align like CSS object-position. Older files for
+       * the same fpx/fpy pinned 0.4 (and the rest of that edge zone) to
+       * one third. The marker stores the new crop beside those files.
+       */
+      const focalMark = params.fpx != null || params.fpy != null ? 'fp2' : '';
       const sig = createHash('md5')
-        .update(hash + JSON.stringify(sorted))
+        .update(hash + focalMark + JSON.stringify(sorted))
         .digest('hex');
       return `${hash}-${sig}`;
     },

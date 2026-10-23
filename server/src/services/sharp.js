@@ -55,9 +55,15 @@ function orientedDimensions(meta) {
 }
 
 /*
- * Cover window in source pixels, centred on the focal point and clamped
- * to the frame. fpx/fpy are used at full float precision. Only the pixel
- * edges are rounded. Null means the window is the whole frame.
+ * Cover window in source pixels, aligned like CSS object-position.
+ * 0 keeps the start edge, 1 keeps the far edge, and 0.4 sits 40% of
+ * the way between those two crops.
+ *
+ * Centring the window on the point instead pins every value outside the
+ * middle of the travel (often the old 0.33 / 0.67 thirds) to one edge.
+ * A 3:2 photo cropped toward a square does that to 0.4, while 0.41 still
+ * moves. fpx/fpy stay at full float precision. Only the pixel edges are
+ * rounded. Null means the window is the whole frame.
  */
 function focalCoverRegion(srcW, srcH, destW, destH, fpx, fpy) {
   if (!srcW || !srcH || !destW || !destH) return null;
@@ -78,8 +84,8 @@ function focalCoverRegion(srcW, srcH, destW, destH, fpx, fpy) {
   const height = Math.max(1, Math.min(srcH, Math.round(cropH)));
   if (width === srcW && height === srcH) return null;
 
-  let left = Math.round(fpx * srcW - width / 2);
-  let top = Math.round(fpy * srcH - height / 2);
+  let left = Math.round((srcW - width) * fpx);
+  let top = Math.round((srcH - height) * fpy);
   left = Math.max(0, Math.min(left, srcW - width));
   top = Math.max(0, Math.min(top, srcH - height));
 
