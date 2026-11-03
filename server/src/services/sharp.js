@@ -3,6 +3,7 @@
 const path = require('path');
 const sharp = require('sharp');
 const createLimit = require('../utils/limit');
+const { pickBestSource } = require('../utils/source');
 
 const VALID_FITS = new Set(['cover', 'contain', 'fill', 'inside', 'outside']);
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{3,8}$/;
@@ -119,18 +120,10 @@ module.exports = ({ strapi }) => {
     },
 
     //% ============================================
-    //% pickBestSource — smallest Strapi-generated format that still covers
-    //%                  the target size; avoids re-processing huge originals
+    //% pickBestSource — kept on the service; always null so Sharp
+    //%                  reads the original upload, not a Strapi format
     //% ============================================
-    pickBestSource(formats, targetWidth, targetHeight) {
-      if (!formats) return null;
-      const target = Math.max(targetWidth || 0, targetHeight || 0);
-      if (target === 0) return null;
-      const candidates = Object.values(formats)
-        .filter(f => f.width >= target)
-        .sort((a, b) => a.width - b.width);
-      return candidates[0] ?? null;
-    },
+    pickBestSource,
 
     //% ============================================
     //% process — accepts a local path (string) or an in-memory Buffer

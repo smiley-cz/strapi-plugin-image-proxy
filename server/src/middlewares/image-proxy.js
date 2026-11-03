@@ -8,6 +8,7 @@ const {
   MIME_MAP,
 } = require('../constants');
 const { resolveSource } = require('../utils/source-loader');
+const { sourceUrlFor } = require('../utils/source');
 
 function hasValidParams(query) {
   for (const k of Object.keys(query)) if (VALID_PARAMS.has(k)) return true;
@@ -81,26 +82,16 @@ module.exports = ({ strapi }) => ({
     }
 
     try {
-      const targetW = query.w ? Number(query.w) : null;
-      const targetH = query.h ? Number(query.h) : null;
-
       /*
-       * Resolve which URL/path to feed Sharp. Order of preference:
-       *   1. Smallest Strapi-generated format that still covers target size
-       *   2. The original file.url
-       *   3. Local fallback path: <publicDir><urlPrefix><hash>.<ext>
+       * Always the original upload. Strapi formats are already cropped,
+       * and a second square cut from the thumbnail lands too tight.
+       * Fallback path: <publicDir><urlPrefix><hash>.<ext>
        *
        * The lookup is cached in-memory for ~30 s (configurable) so a
        * responsive <img srcset> doesn't hammer the DB on cold cache.
        */
       const file = await fileLookup.findByHash(hash);
-
-      let sourceUrl = null;
-      if ((targetW || targetH) && file?.formats) {
-        const better = sharpService.pickBestSource(file.formats, targetW, targetH);
-        if (better?.url) sourceUrl = better.url;
-      }
-      if (!sourceUrl) sourceUrl = file?.url ?? `${config.urlPrefix}${hash}.${ext}`;
+      const sourceUrl = sourceUrlFor(file, `${config.urlPrefix}${hash}.${ext}`);
 
       const source = await resolveSource(sourceUrl, strapi);
       if (!source) {

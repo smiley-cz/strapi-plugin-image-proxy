@@ -3,8 +3,8 @@
 /*
  * Short-lived in-memory cache for plugin::upload.file lookups.
  *
- * The middleware needs the file's `formats` (to pick a smaller source) and
- * `url` (to fetch from local disk or a remote provider) on every cache miss.
+ * The middleware needs the file's `url` (local disk or a remote provider)
+ * on every cache miss.
  * Without caching, a responsive <img srcset="..."> generates one DB query per
  * variant on cold cache, which is wasteful and amplifies traffic spikes.
  *
@@ -37,7 +37,7 @@ module.exports = ({ strapi }) => {
 
       const file = await strapi.db.query('plugin::upload.file').findOne({
         where: { hash },
-        select: ['formats', 'url', 'ext', 'provider'],
+        select: ['url', 'ext', 'provider'],
       });
 
       const value = file ?? null;

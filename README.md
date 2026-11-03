@@ -12,7 +12,7 @@ Intercepts requests to `/uploads/` URLs that contain valid transformation parame
 - Focal point support via `fpx`/`fpy`. On `cover` with both `w` and `h`, the fraction is used as given (including fine decimals, or a 0–100 percentage). Responsive width-only srcsets do not crop; the SvelteKit helper applies the same fraction with CSS `object-position`
 - Automatic EXIF orientation fix (`autoOrient`) — mobile photos display correctly without explicit `?rotate=`
 - Disk cache with configurable TTL and ETag/304 support
-- Automatically uses Strapi-generated thumbnail formats as source where possible (avoids processing large originals at request time)
+- Always reads the original upload. Strapi's thumbnail is a landscape strip already cut from the middle, so a second square crop from that file lands too tight on the face
 - Works with **any Strapi V5 upload provider** — local disk, AWS S3, Cloudinary, etc. Remote sources are fetched on demand and cached locally
 - Path-based Sharp input with `sequentialRead` for local files; in-memory buffer for remote — both are memory-efficient
 - Safety limits: max input megapixels, max output dimensions, libvips threads per image, and a global cap on simultaneous Sharp pipelines
@@ -761,9 +761,9 @@ fetch('/image-proxy/cache/stats', {
 
 ## How source selection works
 
-To avoid processing huge originals at request time, the plugin checks if Strapi has already generated a smaller format that is large enough for the requested output size. For example, a `?w=800` request will use the Strapi `large` (1000px) format as its Sharp input rather than a 50MP original. Sharp processes 1000px instead of 50MP — negligible memory, fast response.
+Sharp always reads the original file (`file.url`). It does not use Strapi's `thumbnail`, `small`, `medium`, or `large` derivatives. Those files are already cropped. A later cover crop from the thumbnail is a second cut and the face sits too high.
 
-If no suitable Strapi format exists, the original is used with `sequentialRead: true` and `limitInputPixels` set to the configured maximum. If the original exceeds the pixel limit, the request falls through to Strapi's default static handler — the original is still served, just unprocessed.
+The original is read with `sequentialRead: true` and `limitInputPixels` set to the configured maximum. If the original exceeds the pixel limit, the request falls through to Strapi's default static handler. The original is still served, just unprocessed.
 
 ## Upload provider support (local, S3, Cloudinary, …)
 

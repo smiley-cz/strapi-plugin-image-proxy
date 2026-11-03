@@ -30,10 +30,14 @@ module.exports = ({ strapi }) => {
        * fp2: cover crops align like CSS object-position. Older files for
        * the same fpx/fpy pinned 0.4 (and the rest of that edge zone) to
        * one third. The marker stores the new crop beside those files.
+       *
+       * orig: Sharp reads the original upload, not a Strapi thumbnail.
+       * Older files for the same query were cut from that landscape strip.
        */
       const focalMark = params.fpx != null || params.fpy != null ? 'fp2' : '';
+      const sourceMark = 'orig';
       const sig = createHash('md5')
-        .update(hash + focalMark + JSON.stringify(sorted))
+        .update(hash + focalMark + sourceMark + JSON.stringify(sorted))
         .digest('hex');
       return `${hash}-${sig}`;
     },
